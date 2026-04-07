@@ -16,7 +16,7 @@ public class VictoryPointProtection {
         }
 
         Player player = event.getPlayer();
-        if (player instanceof ServerPlayer sp && sp.hasPermissions(2)) {
+        if (player instanceof ServerPlayer sp && sp.hasPermissions(2) && sp.isCreative()) {
             return;
         }
 

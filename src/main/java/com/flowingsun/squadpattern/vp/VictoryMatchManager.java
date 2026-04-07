@@ -4,6 +4,7 @@ import com.flowingsun.squadpattern.config.SquadConfig;
 import com.flowingsun.squadpattern.match.SquadMatchService;
 import com.flowingsun.squadpattern.net.MatchHudSyncS2C;
 import com.flowingsun.squadpattern.net.SquadNetwork;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.TickEvent;
@@ -22,11 +23,13 @@ public final class VictoryMatchManager {
         public float progress;
         public String ownerTeam;
         public boolean contested;
+        public boolean capturing;
     }
 
     public static final class MatchState {
         public String mapId;
         public String mapName;
+        public ResourceLocation worldId;
         public TeamSide teamA;
         public TeamSide teamB;
         public float pointsA;
@@ -47,6 +50,7 @@ public final class VictoryMatchManager {
         MatchState s = new MatchState();
         s.mapId = ctx.mapId();
         s.mapName = ctx.mapName();
+        s.worldId = ctx.worldId();
         s.teamA = new TeamSide(ctx.teamA(), ctx.colorA());
         s.teamB = new TeamSide(ctx.teamB(), ctx.colorB());
         s.pointsA = SquadConfig.INITIAL_VICTORY_POINTS.get();
@@ -144,11 +148,15 @@ public final class VictoryMatchManager {
 
     private void syncHud(MinecraftServer server) {
         Map<String, List<VictoryPointBlockEntity>> pointsByMap = new HashMap<>();
+        Map<ResourceLocation, List<VictoryPointBlockEntity>> pointsByWorld = new HashMap<>();
         for (VictoryPointBlockEntity point : VictoryPointBlockEntity.ACTIVE_POINTS) {
-            if (point.isRemoved() || point.getMapId() == null) {
+            if (point.isRemoved() || point.getLevel() == null) {
                 continue;
             }
-            pointsByMap.computeIfAbsent(point.getMapId(), k -> new ArrayList<>()).add(point);
+            if (point.getMapId() != null) {
+                pointsByMap.computeIfAbsent(point.getMapId(), k -> new ArrayList<>()).add(point);
+            }
+            pointsByWorld.computeIfAbsent(point.getLevel().dimension().location(), k -> new ArrayList<>()).add(point);
         }
 
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
@@ -161,7 +169,12 @@ public final class VictoryMatchManager {
                 continue;
             }
             st.points.clear();
-            for (VictoryPointBlockEntity be : pointsByMap.getOrDefault(st.mapId, List.of())) {
+            List<VictoryPointBlockEntity> orderedPoints = new ArrayList<>(pointsByMap.getOrDefault(st.mapId, List.of()));
+            if (orderedPoints.isEmpty() && st.worldId != null) {
+                orderedPoints.addAll(pointsByWorld.getOrDefault(st.worldId, List.of()));
+            }
+            orderedPoints.sort(Comparator.comparingLong(be -> be.getBlockPos().asLong()));
+            for (VictoryPointBlockEntity be : orderedPoints) {
                 if (!be.getPointType().showInTopHud()) {
                     continue;
                 }
@@ -170,6 +183,7 @@ public final class VictoryMatchManager {
                 ps.progress = be.getProgressForHud(st.teamA.name, st.teamB.name);
                 ps.ownerTeam = be.getOwnerTeam();
                 ps.contested = be.isContested();
+                ps.capturing = be.isCapturing();
                 st.points.add(ps);
             }
             SquadNetwork.sendTo(player, new MatchHudSyncS2C(

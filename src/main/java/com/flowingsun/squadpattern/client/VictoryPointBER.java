@@ -6,6 +6,7 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
@@ -48,7 +49,8 @@ public class VictoryPointBER implements BlockEntityRenderer<VictoryPointBlockEnt
 
     private static void drawCentered(Font font, PoseStack pose, MultiBufferSource buf, String text, int x, int y, int color) {
         float tx = x - font.width(text) / 2F;
-        font.drawInBatch(text, tx, y, color, false, pose.last().pose(), buf, Font.DisplayMode.NORMAL, 0, 15728880);
+        // Render in full-bright mode so labels stay readable and emissive-looking in dark areas.
+        font.drawInBatch(text, tx, y, color, false, pose.last().pose(), buf, Font.DisplayMode.SEE_THROUGH, 0, LightTexture.FULL_BRIGHT);
     }
 
     private static void drawBar(PoseStack pose, MultiBufferSource buffers, float signed, int aColor, int bColor) {
@@ -81,4 +83,3 @@ public class VictoryPointBER implements BlockEntityRenderer<VictoryPointBlockEnt
         vc.vertex(m, x0, y0, 0).color(r, g, b, a).endVertex();
     }
 }
-

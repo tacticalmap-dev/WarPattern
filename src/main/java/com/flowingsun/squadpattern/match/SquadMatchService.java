@@ -17,6 +17,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -25,11 +26,15 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.loading.FMLPaths;
 import org.slf4j.Logger;
@@ -84,11 +89,14 @@ public final class SquadMatchService {
     private final Map<String, ActiveMatch> activeMatches = new ConcurrentHashMap<>();
     private final Map<UUID, PlayerAssignment> playerAssignments = new ConcurrentHashMap<>();
     private final Map<ResourceLocation, String> worldToMapId = new ConcurrentHashMap<>();
+    private final Map<UUID, String> disconnectedMatchByPlayer = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingTeleport> pendingTeleports = new ConcurrentHashMap<>();
+    private long maintenanceTick;
 
     private SquadMatchService() {
         Path dir = FMLPaths.CONFIGDIR.get().resolve("squadpattern");
         this.storageFile = dir.resolve("maps.json");
-        this.presetRoot = dir.resolve("presets");
+        this.presetRoot = FMLPaths.GAMEDIR.get().resolve("bakmap");
         loadMaps();
     }
 
@@ -97,6 +105,12 @@ public final class SquadMatchService {
         LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("squadpattern")
                 .requires(source -> source.hasPermission(2))
                 .then(Commands.literal("map")
+                        .then(Commands.literal("delete")
+                                .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
+                                        .executes(ctx -> deleteMap(
+                                                ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "mapName")
+                                        ))))
                         .then(Commands.literal("import")
                                 .then(Commands.argument("mapName", StringArgumentType.word())
                                         .then(Commands.argument("worldName", StringArgumentType.word())
@@ -181,14 +195,85 @@ public final class SquadMatchService {
                                 .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
                                         .executes(ctx -> endMatchByMapName(ctx.getSource(), StringArgumentType.getString(ctx, "mapName"))))));
 
+        LiteralArgumentBuilder<CommandSourceStack> game = Commands.literal("game")
+                .requires(source -> source.hasPermission(2))
+                .then(Commands.literal("start")
+                        .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
+                                .executes(ctx -> startMatchFromGameCommand(
+                                        ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "mapName"),
+                                        null,
+                                        null
+                                ))
+                                .then(Commands.argument("redPlayers", EntityArgument.players())
+                                        .executes(ctx -> startMatchFromGameCommand(
+                                                ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "mapName"),
+                                                EntityArgument.getPlayers(ctx, "redPlayers"),
+                                                null
+                                        ))
+                                        .then(Commands.argument("bluePlayers", EntityArgument.players())
+                                                .executes(ctx -> startMatchFromGameCommand(
+                                                        ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "mapName"),
+                                                        EntityArgument.getPlayers(ctx, "redPlayers"),
+                                                        EntityArgument.getPlayers(ctx, "bluePlayers")
+                                                ))))))
+                .then(Commands.literal("end")
+                        .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
+                                .executes(ctx -> endMatchByMapName(ctx.getSource(), StringArgumentType.getString(ctx, "mapName")))));
+
         event.getDispatcher().register(root);
+        event.getDispatcher().register(game);
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        MinecraftServer server = event.getServer();
+        for (ActiveMatch match : new ArrayList<>(activeMatches.values())) {
+            restoreWorldBorderForMatch(server, match);
+        }
         activeMatches.clear();
         playerAssignments.clear();
         worldToMapId.clear();
+        disconnectedMatchByPlayer.clear();
+        pendingTeleports.clear();
+        maintenanceTick = 0L;
+    }
+
+    @SubscribeEvent
+    public void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END || event.getServer() == null) {
+            return;
+        }
+        processPendingTeleports(event.getServer());
+        maintenanceTick++;
+        if (maintenanceTick % 40L != 0L) {
+            return;
+        }
+        cleanupMapsForDeletedWorlds(event.getServer());
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        PlayerAssignment assignment = playerAssignments.get(player.getUUID());
+        if (assignment == null) {
+            return;
+        }
+        if (activeMatches.containsKey(assignment.mapId())) {
+            disconnectedMatchByPlayer.put(player.getUUID(), assignment.mapId());
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        handleReconnect(player);
     }
 
     private CompletableFuture<Suggestions> suggestMapNames(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
@@ -243,10 +328,67 @@ public final class SquadMatchService {
         endMatchInternal(match, server, true, "ticket-zero");
     }
 
+    private int startMatchFromGameCommand(
+            CommandSourceStack source,
+            String rawMapName,
+            Collection<ServerPlayer> redPlayersArg,
+            Collection<ServerPlayer> bluePlayersArg
+    ) {
+        MinecraftServer server = source.getServer();
+        Collection<ServerPlayer> redPlayers = redPlayersArg;
+        Collection<ServerPlayer> bluePlayers = bluePlayersArg;
+
+        if (redPlayers == null && bluePlayers == null) {
+            List<ServerPlayer> candidates = onlineMatchCandidates(server);
+            candidates.sort(Comparator.comparing(p -> p.getGameProfile().getName(), String.CASE_INSENSITIVE_ORDER));
+            List<ServerPlayer> red = new ArrayList<>();
+            List<ServerPlayer> blue = new ArrayList<>();
+            for (int i = 0; i < candidates.size(); i++) {
+                if ((i & 1) == 0) {
+                    red.add(candidates.get(i));
+                } else {
+                    blue.add(candidates.get(i));
+                }
+            }
+            redPlayers = red;
+            bluePlayers = blue;
+        } else if (redPlayers != null && bluePlayers == null) {
+            Set<UUID> redIds = new HashSet<>();
+            for (ServerPlayer p : redPlayers) {
+                redIds.add(p.getUUID());
+            }
+            List<ServerPlayer> blue = new ArrayList<>();
+            for (ServerPlayer candidate : onlineMatchCandidates(server)) {
+                if (!redIds.contains(candidate.getUUID())) {
+                    blue.add(candidate);
+                }
+            }
+            bluePlayers = blue;
+        } else if (redPlayers == null) {
+            Set<UUID> blueIds = new HashSet<>();
+            for (ServerPlayer p : bluePlayers) {
+                blueIds.add(p.getUUID());
+            }
+            List<ServerPlayer> red = new ArrayList<>();
+            for (ServerPlayer candidate : onlineMatchCandidates(server)) {
+                if (!blueIds.contains(candidate.getUUID())) {
+                    red.add(candidate);
+                }
+            }
+            redPlayers = red;
+        }
+
+        return startMatch(source, rawMapName, redPlayers, bluePlayers);
+    }
+
     private int importMap(CommandSourceStack source, String rawMapName, String rawWorldName) {
         MinecraftServer server = source.getServer();
         String mapName = normalizeMapName(rawMapName);
         ResourceLocation worldId = parseWorldId(rawWorldName);
+        if (!isSupportedMapWorld(worldId)) {
+            source.sendFailure(Component.literal("Unsupported map world: " + worldId + ". Use a Multiworld dimension id."));
+            return 0;
+        }
         ensureWorld(server, worldId);
 
         MapPreset preset = mapPresets.computeIfAbsent(mapName, k -> new MapPreset());
@@ -262,7 +404,6 @@ public final class SquadMatchService {
         preset.saved = false;
         saveMaps();
 
-        ensurePresetBackup(server, preset);
         source.sendSuccess(() -> Component.literal("Map imported: " + mapName + " -> " + worldId), true);
         return Command.SINGLE_SUCCESS;
     }
@@ -270,6 +411,10 @@ public final class SquadMatchService {
     private int bindMapToCurrentWorld(CommandSourceStack source, String rawMapName) {
         String mapName = normalizeMapName(rawMapName);
         ResourceLocation worldId = source.getLevel().dimension().location();
+        if (!isSupportedMapWorld(worldId)) {
+            source.sendFailure(Component.literal("Current world is not a Multiworld map world: " + worldId + "."));
+            return 0;
+        }
 
         MapPreset preset = mapPresets.computeIfAbsent(mapName, k -> new MapPreset());
         ResourceLocation oldWorld = worldIdOf(preset);
@@ -284,7 +429,6 @@ public final class SquadMatchService {
         preset.saved = false;
         saveMaps();
 
-        ensurePresetBackup(source.getServer(), preset);
         source.sendSuccess(() -> Component.literal("Map bound: " + mapName + " -> " + worldId), true);
         return Command.SINGLE_SUCCESS;
     }
@@ -347,12 +491,15 @@ public final class SquadMatchService {
         p2.x = x2;
         p2.y = y2;
         p2.z = z2;
+        normalizeBoundsToSquare(p1, p2);
         preset.bound1 = p1;
         preset.bound2 = p2;
         preset.saved = false;
         saveMaps();
 
-        source.sendSuccess(() -> Component.literal("Bounds set for map '" + mapName + "': (" + x1 + "," + y1 + "," + z1 + ") -> (" + x2 + "," + y2 + "," + z2 + ")"), true);
+        source.sendSuccess(() -> Component.literal(
+                "Bounds set (square) for map '" + mapName + "': (" + p1.x + "," + p1.y + "," + p1.z + ") -> (" + p2.x + "," + p2.y + "," + p2.z + ")"
+        ), true);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -371,17 +518,21 @@ public final class SquadMatchService {
             return 0;
         }
 
-        ResourceLocation worldId = worldIdOf(preset);
+        ResourceLocation worldId = resolveWorldBindingForRuntime(source, source.getServer(), preset, mapName);
         if (worldId == null) {
             source.sendFailure(Component.literal("Map has invalid world binding."));
             return 0;
         }
 
         ensureWorld(server, worldId);
-        Path worldDir = worldDirectory(server, worldId);
+        Path worldDir = existingWorldDirectory(server, worldId);
         Path backupDir = backupDirectory(worldId);
         if (!Files.exists(worldDir)) {
-            source.sendFailure(Component.literal("World folder not found: " + worldDir));
+            unloadWorld(server, worldId);
+            worldDir = existingWorldDirectory(server, worldId);
+        }
+        if (!Files.exists(worldDir)) {
+            source.sendFailure(Component.literal("World folder not found: " + worldDirectory(server, worldId) + " (legacy: " + legacyWorldDirectory(server, worldId) + ")"));
             return 0;
         }
 
@@ -403,7 +554,7 @@ public final class SquadMatchService {
         }
 
         MinecraftServer server = source.getServer();
-        ResourceLocation worldId = worldIdOf(preset);
+        ResourceLocation worldId = resolveWorldBindingForRuntime(source, source.getServer(), preset, mapName);
         if (worldId == null) {
             source.sendFailure(Component.literal("Map has invalid world binding."));
             return 0;
@@ -415,10 +566,14 @@ public final class SquadMatchService {
         }
 
         ensureWorld(server, worldId);
-        Path worldDir = worldDirectory(server, worldId);
+        Path worldDir = existingWorldDirectory(server, worldId);
         Path backupDir = backupDirectory(worldId);
         if (!Files.exists(worldDir)) {
-            source.sendFailure(Component.literal("World folder not found: " + worldDir));
+            unloadWorld(server, worldId);
+            worldDir = existingWorldDirectory(server, worldId);
+        }
+        if (!Files.exists(worldDir)) {
+            source.sendFailure(Component.literal("World folder not found: " + worldDirectory(server, worldId) + " (legacy: " + legacyWorldDirectory(server, worldId) + ")"));
             return 0;
         }
 
@@ -427,6 +582,40 @@ public final class SquadMatchService {
         preset.saved = true;
         saveMaps();
         source.sendSuccess(() -> Component.literal("Preset remade for map '" + mapName + "' -> " + backupDir), true);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private int deleteMap(CommandSourceStack source, String rawMapName) {
+        String mapName = normalizeMapName(rawMapName);
+        MapPreset preset = mapPresets.get(mapName);
+        if (preset == null) {
+            source.sendFailure(Component.literal("Unknown map: " + mapName));
+            return 0;
+        }
+
+        if (findActiveByMapName(mapName) != null) {
+            source.sendFailure(Component.literal("Map is running. End the match first: " + mapName));
+            return 0;
+        }
+
+        ResourceLocation worldId = worldIdOf(preset);
+        boolean worldShared = worldId != null && isWorldReferencedByOtherMap(mapName, worldId);
+        if (worldId != null) {
+            // Keep the actual Multiworld world; delete only map-related data.
+            if (!worldShared) {
+                deleteDirectory(backupDirectory(worldId));
+            }
+        }
+
+        String mapId = mapIdOf(mapName);
+        worldToMapId.entrySet().removeIf(entry -> mapId.equals(entry.getValue()));
+        mapPresets.remove(mapName);
+        saveMaps();
+        if (worldId != null && worldShared) {
+            source.sendSuccess(() -> Component.literal("Map deleted: " + mapName + " (world preserved, shared backup kept)"), true);
+        } else {
+            source.sendSuccess(() -> Component.literal("Map deleted: " + mapName + " (world preserved)"), true);
+        }
         return Command.SINGLE_SUCCESS;
     }
 
@@ -467,7 +656,7 @@ public final class SquadMatchService {
             return 0;
         }
 
-        ResourceLocation worldId = worldIdOf(preset);
+        ResourceLocation worldId = resolveWorldBindingForRuntime(source, source.getServer(), preset, mapName);
         if (worldId == null) {
             source.sendFailure(Component.literal("Map has invalid world binding."));
             return 0;
@@ -480,7 +669,11 @@ public final class SquadMatchService {
         }
 
         ensureWorld(server, worldId);
-        ensurePresetBackup(server, preset);
+        Path backupDir = backupDirectory(worldId);
+        if (!Files.exists(backupDir)) {
+            source.sendFailure(Component.literal("Map backup missing. Run /squadpattern map " + mapName + " save first."));
+            return 0;
+        }
         restorePresetWorld(server, mapName, worldId);
 
         ServerLevel level = getLevel(server, worldId);
@@ -489,7 +682,7 @@ public final class SquadMatchService {
             return 0;
         }
 
-        String mapId = "squad:" + mapName;
+        String mapId = mapIdOf(mapName);
         ActiveMatch match = new ActiveMatch();
         match.mapId = mapId;
         match.mapName = mapName;
@@ -512,8 +705,10 @@ public final class SquadMatchService {
             playerAssignments.put(uuid, new PlayerAssignment(mapId, "blue"));
         }
 
-        teleportPlayersToSpawn(server, level, preset.redSpawn, red);
-        teleportPlayersToSpawn(server, level, preset.blueSpawn, blue);
+        clearPlayersInventory(server, red);
+        clearPlayersInventory(server, blue);
+        teleportPlayersToSpawn(server, level, preset.redSpawn, red, mapId);
+        teleportPlayersToSpawn(server, level, preset.blueSpawn, blue, mapId);
         applyWorldBorderForMatch(level, match);
 
         VictoryMatchManager.INSTANCE.startMatch(match.view());
@@ -546,6 +741,7 @@ public final class SquadMatchService {
         for (UUID uuid : match.playersB) {
             playerAssignments.remove(uuid);
         }
+        pendingTeleports.keySet().removeIf(uuid -> match.playersA.contains(uuid) || match.playersB.contains(uuid));
 
         VictoryMatchManager.INSTANCE.resetMap(match.mapId);
         FtbTeamsCompat.INSTANCE.disbandMapTeams(match.mapId, server);
@@ -602,39 +798,470 @@ public final class SquadMatchService {
         return null;
     }
 
-    private void teleportPlayersToSpawn(MinecraftServer server, ServerLevel fallbackLevel, SpawnPoint spawn, Set<UUID> players) {
-        ResourceLocation dim = ResourceLocation.tryParse(spawn.dimension);
-        ServerLevel target = dim == null ? fallbackLevel : getLevel(server, dim);
-        if (target == null) {
-            target = fallbackLevel;
+    private String mapIdOf(String mapName) {
+        return "squad:" + mapName;
+    }
+
+    private boolean isWorldReferencedByOtherMap(String mapName, ResourceLocation worldId) {
+        String target = worldId.toString();
+        for (Map.Entry<String, MapPreset> entry : mapPresets.entrySet()) {
+            if (entry.getKey().equals(mapName)) {
+                continue;
+            }
+            MapPreset preset = entry.getValue();
+            if (preset == null || preset.worldId == null) {
+                continue;
+            }
+            if (target.equals(preset.worldId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<ServerPlayer> onlineMatchCandidates(MinecraftServer server) {
+        List<ServerPlayer> players = new ArrayList<>();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.isSpectator() || player.isCreative()) {
+                continue;
+            }
+            players.add(player);
+        }
+        return players;
+    }
+
+    private void cleanupMapsForDeletedWorlds(MinecraftServer server) {
+        List<String> removedMaps = new ArrayList<>();
+        Iterator<Map.Entry<String, MapPreset>> iterator = mapPresets.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, MapPreset> entry = iterator.next();
+            String mapName = entry.getKey();
+            MapPreset preset = entry.getValue();
+            ResourceLocation worldId = worldIdOf(preset);
+            if (worldId == null) {
+                continue;
+            }
+            if (getLevel(server, worldId) != null) {
+                continue;
+            }
+
+            Path worldDir = worldDirectory(server, worldId);
+            Path legacyDir = legacyWorldDirectory(server, worldId);
+            if (Files.exists(worldDir) || Files.exists(legacyDir)) {
+                continue;
+            }
+
+            ActiveMatch running = findActiveByMapName(mapName);
+            if (running != null) {
+                teleportPlayersToDefault(server, running.playersA);
+                teleportPlayersToDefault(server, running.playersB);
+                endMatchInternal(running, server, false, "map-world-deleted");
+            }
+
+            String mapId = mapIdOf(mapName);
+            worldToMapId.entrySet().removeIf(e -> mapId.equals(e.getValue()) || worldId.equals(e.getKey()));
+            deleteDirectory(backupDirectory(worldId));
+            iterator.remove();
+            removedMaps.add(mapName + " -> " + worldId);
         }
 
+        if (!removedMaps.isEmpty()) {
+            saveMaps();
+            LOGGER.info("Removed maps because bound worlds were deleted: {}", String.join(", ", removedMaps));
+        }
+    }
+
+    private void clearPlayersInventory(MinecraftServer server, Set<UUID> players) {
         for (UUID uuid : players) {
             ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player == null) {
                 continue;
             }
+            player.getInventory().clearContent();
+            clearCuriosInventory(player);
+            player.inventoryMenu.broadcastChanges();
+        }
+    }
+
+    private void teleportPlayersToDefault(MinecraftServer server, Set<UUID> players) {
+        for (UUID uuid : players) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player == null) {
+                continue;
+            }
+            teleportToDefaultWorld(player);
+        }
+    }
+
+    private void clearCuriosInventory(ServerPlayer player) {
+        try {
+            Class<?> curiosApiClass = Class.forName("top.theillusivec4.curios.api.CuriosApi");
+            Object helper = curiosApiClass.getMethod("getCuriosHelper").invoke(null);
+            Object lazyOptional = helper.getClass()
+                    .getMethod("getCuriosHandler", LivingEntity.class)
+                    .invoke(helper, player);
+            Object resolved = lazyOptional.getClass().getMethod("resolve").invoke(lazyOptional);
+            if (!(resolved instanceof Optional<?> optional) || optional.isEmpty()) {
+                return;
+            }
+
+            Object curiosHandler = optional.get();
+            Object curiosMapObj = curiosHandler.getClass().getMethod("getCurios").invoke(curiosHandler);
+            if (!(curiosMapObj instanceof Map<?, ?> curiosMap)) {
+                return;
+            }
+
+            for (Object stacksHandler : curiosMap.values()) {
+                if (stacksHandler == null) {
+                    continue;
+                }
+                clearItemHandlerSlots(callNoArg(stacksHandler, "getStacks"));
+                clearItemHandlerSlots(callNoArg(stacksHandler, "getCosmeticStacks"));
+            }
+        } catch (ClassNotFoundException ignored) {
+            // Curios is not installed, nothing to clear.
+        } catch (Throwable ex) {
+            LOGGER.warn("Failed to clear curios inventory for player {}", player.getGameProfile().getName(), ex);
+        }
+    }
+
+    private Object callNoArg(Object target, String method) {
+        if (target == null) {
+            return null;
+        }
+        try {
+            return target.getClass().getMethod(method).invoke(target);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void clearItemHandlerSlots(Object handler) {
+        if (handler == null) {
+            return;
+        }
+        try {
+            int slots = (int) handler.getClass().getMethod("getSlots").invoke(handler);
+            Method setStackInSlot = handler.getClass().getMethod("setStackInSlot", int.class, ItemStack.class);
+            for (int i = 0; i < slots; i++) {
+                setStackInSlot.invoke(handler, i, ItemStack.EMPTY);
+            }
+        } catch (Throwable ignored) {
+            // Non-modifiable handler type; ignore.
+        }
+    }
+
+    private void handleReconnect(ServerPlayer player) {
+        UUID playerId = player.getUUID();
+        String mapId = disconnectedMatchByPlayer.remove(playerId);
+        if (mapId == null) {
+            return;
+        }
+
+        ActiveMatch match = activeMatches.get(mapId);
+        if (match == null || !isPlayerInMatch(match, playerId)) {
+            teleportToDefaultWorld(player);
+            return;
+        }
+
+        teleportPlayerBackToMatch(player, match);
+    }
+
+    private boolean isPlayerInMatch(ActiveMatch match, UUID playerId) {
+        if (match.playersA.contains(playerId) || match.playersB.contains(playerId)) {
+            return true;
+        }
+        PlayerAssignment assignment = playerAssignments.get(playerId);
+        return assignment != null && match.mapId.equals(assignment.mapId());
+    }
+
+    private void teleportPlayerBackToMatch(ServerPlayer player, ActiveMatch match) {
+        MinecraftServer server = player.server;
+        if (server == null) {
+            return;
+        }
+
+        ensureWorld(server, match.worldId);
+        ServerLevel mapLevel = getLevel(server, match.worldId);
+        if (mapLevel == null) {
+            LOGGER.warn("Reconnect failed for {}: map world {} is not available", player.getGameProfile().getName(), match.worldId);
+            teleportToDefaultWorld(player);
+            return;
+        }
+
+        String team = teamForPlayerInMatch(match, player.getUUID());
+        SpawnPoint spawn = spawnForTeam(match.mapName, team);
+        if (spawn == null) {
+            LOGGER.warn("Reconnect failed for {}: missing team spawn for map {}", player.getGameProfile().getName(), match.mapName);
+            teleportToDefaultWorld(player);
+            return;
+        }
+
+        teleportPlayerToSpawn(server, player, mapLevel, spawn, match.mapId);
+    }
+
+    private SpawnPoint spawnForTeam(String mapName, String team) {
+        MapPreset preset = mapPresets.get(mapName);
+        if (preset == null) {
+            return null;
+        }
+        if ("red".equals(team)) {
+            return preset.redSpawn;
+        }
+        if ("blue".equals(team)) {
+            return preset.blueSpawn;
+        }
+        return null;
+    }
+
+    private String teamForPlayerInMatch(ActiveMatch match, UUID playerId) {
+        if (match.playersA.contains(playerId)) {
+            return "red";
+        }
+        if (match.playersB.contains(playerId)) {
+            return "blue";
+        }
+        PlayerAssignment assignment = playerAssignments.get(playerId);
+        if (assignment != null && match.mapId.equals(assignment.mapId())) {
+            return assignment.team();
+        }
+        return null;
+    }
+
+    private void teleportToDefaultWorld(ServerPlayer player) {
+        MinecraftServer server = player.server;
+        if (server == null) {
+            return;
+        }
+        ServerLevel overworld = server.overworld();
+        if (overworld == null) {
+            return;
+        }
+
+        BlockPos spawn = overworld.getSharedSpawnPos();
+        double x = spawn.getX() + 0.5D;
+        double y = spawn.getY() + 1D;
+        double z = spawn.getZ() + 0.5D;
+        player.teleportTo(overworld, x, y, z, player.getYRot(), player.getXRot());
+        player.setRespawnPosition(overworld.dimension(), spawn, 0.0F, true, false);
+        pendingTeleports.remove(player.getUUID());
+    }
+
+    private void teleportPlayersToSpawn(MinecraftServer server, ServerLevel fallbackLevel, SpawnPoint spawn, Set<UUID> players, String mapId) {
+        for (UUID uuid : players) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player == null) {
+                continue;
+            }
+            teleportPlayerToSpawn(server, player, fallbackLevel, spawn, mapId);
+        }
+    }
+
+    private void teleportPlayerToSpawn(MinecraftServer server, ServerPlayer player, ServerLevel fallbackLevel, SpawnPoint spawn, String mapId) {
+        // Always teleport to the active match world to avoid stale/mismatched spawn dimension data.
+        ServerLevel target = fallbackLevel;
+        player.stopRiding();
+        player.teleportTo(target, spawn.x, spawn.y, spawn.z, spawn.yaw, spawn.pitch);
+        if (!player.serverLevel().dimension().equals(target.dimension())) {
+            LOGGER.warn(
+                    "Teleport dimension mismatch for '{}': expected {}, actual {}. Retrying teleport.",
+                    player.getGameProfile().getName(),
+                    target.dimension().location(),
+                    player.serverLevel().dimension().location()
+            );
             player.teleportTo(target, spawn.x, spawn.y, spawn.z, spawn.yaw, spawn.pitch);
-            player.setRespawnPosition(target.dimension(), new net.minecraft.core.BlockPos((int) spawn.x, (int) spawn.y, (int) spawn.z), spawn.yaw, true, false);
+            if (!player.serverLevel().dimension().equals(target.dimension())) {
+                boolean moved = multiworldTeleportPlayer(player, target, spawn);
+                if (!moved) {
+                    LOGGER.warn(
+                            "Fallback Multiworld teleport did not move '{}' to {} (still at {}).",
+                            player.getGameProfile().getName(),
+                            target.dimension().location(),
+                            player.serverLevel().dimension().location()
+                    );
+                }
+            }
+        }
+        player.setRespawnPosition(target.dimension(), new BlockPos((int) spawn.x, (int) spawn.y, (int) spawn.z), spawn.yaw, true, false);
+        scheduleTeleportVerification(server, player, mapId, target, spawn);
+        LOGGER.info(
+                "Teleported player '{}' to {} at ({}, {}, {}) [spawnDimension={}]",
+                player.getGameProfile().getName(),
+                target.dimension().location(),
+                spawn.x, spawn.y, spawn.z,
+                spawn.dimension
+        );
+    }
+
+    private void scheduleTeleportVerification(MinecraftServer server, ServerPlayer player, String mapId, ServerLevel target, SpawnPoint spawn) {
+        if (mapId == null || mapId.isBlank()) {
+            pendingTeleports.remove(player.getUUID());
+            return;
+        }
+        PendingTeleport pending = new PendingTeleport();
+        pending.playerId = player.getUUID();
+        pending.mapId = mapId;
+        pending.worldId = target.dimension().location();
+        pending.x = spawn.x;
+        pending.y = spawn.y;
+        pending.z = spawn.z;
+        pending.yaw = spawn.yaw;
+        pending.pitch = spawn.pitch;
+        pending.nextCheckTick = server.getTickCount() + 2L;
+        pending.attemptsRemaining = 3;
+        pendingTeleports.put(pending.playerId, pending);
+    }
+
+    private void processPendingTeleports(MinecraftServer server) {
+        if (pendingTeleports.isEmpty()) {
+            return;
+        }
+        long now = server.getTickCount();
+        Iterator<Map.Entry<UUID, PendingTeleport>> iterator = pendingTeleports.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, PendingTeleport> entry = iterator.next();
+            PendingTeleport pending = entry.getValue();
+            if (pending == null || now < pending.nextCheckTick) {
+                continue;
+            }
+
+            ActiveMatch match = activeMatches.get(pending.mapId);
+            PlayerAssignment assignment = playerAssignments.get(pending.playerId);
+            if (match == null || assignment == null || !pending.mapId.equals(assignment.mapId())) {
+                iterator.remove();
+                continue;
+            }
+
+            ServerPlayer player = server.getPlayerList().getPlayer(pending.playerId);
+            if (player == null) {
+                iterator.remove();
+                continue;
+            }
+
+            boolean inTargetDimension = player.serverLevel().dimension().location().equals(pending.worldId);
+            boolean nearTarget = inTargetDimension && player.distanceToSqr(pending.x, pending.y, pending.z) <= 4.0D;
+            if (nearTarget) {
+                iterator.remove();
+                continue;
+            }
+
+            ServerLevel level = getLevel(server, pending.worldId);
+            if (level == null) {
+                ensureWorld(server, pending.worldId);
+                level = getLevel(server, pending.worldId);
+            }
+            if (level == null) {
+                LOGGER.warn(
+                        "Teleport correction failed for '{}': target world '{}' unavailable.",
+                        player.getGameProfile().getName(),
+                        pending.worldId
+                );
+                iterator.remove();
+                continue;
+            }
+
+            player.stopRiding();
+            player.teleportTo(level, pending.x, pending.y, pending.z, pending.yaw, pending.pitch);
+            if (!player.serverLevel().dimension().equals(level.dimension())) {
+                SpawnPoint fallbackSpawn = new SpawnPoint();
+                fallbackSpawn.dimension = pending.worldId.toString();
+                fallbackSpawn.x = pending.x;
+                fallbackSpawn.y = pending.y;
+                fallbackSpawn.z = pending.z;
+                fallbackSpawn.yaw = pending.yaw;
+                fallbackSpawn.pitch = pending.pitch;
+                multiworldTeleportPlayer(player, level, fallbackSpawn);
+            }
+            player.setRespawnPosition(level.dimension(), new BlockPos((int) pending.x, (int) pending.y, (int) pending.z), pending.yaw, true, false);
+            pending.attemptsRemaining--;
+            if (pending.attemptsRemaining <= 0) {
+                iterator.remove();
+            } else {
+                pending.nextCheckTick = now + 10L;
+            }
+            LOGGER.info(
+                    "Teleport corrected for '{}' -> {} at ({}, {}, {}) [attemptsLeft={}]",
+                    player.getGameProfile().getName(),
+                    pending.worldId,
+                    pending.x, pending.y, pending.z,
+                    Math.max(0, pending.attemptsRemaining)
+            );
+        }
+    }
+
+    private boolean multiworldTeleportPlayer(ServerPlayer player, ServerLevel target, SpawnPoint spawn) {
+        try {
+            Class<?> mwClass = Class.forName("me.isaiah.multiworld.MultiworldMod");
+            Object creator = mwClass.getMethod("get_world_creator").invoke(null);
+            if (creator == null) {
+                return false;
+            }
+
+            Method teleMethod = null;
+            for (Method m : creator.getClass().getMethods()) {
+                if ("teleleport".equals(m.getName()) && m.getParameterCount() == 5) {
+                    teleMethod = m;
+                    break;
+                }
+            }
+            if (teleMethod == null) {
+                return false;
+            }
+
+            teleMethod.invoke(creator, player, target, spawn.x, spawn.y, spawn.z);
+            // Ensure rotation and exact position after Multiworld move.
+            player.teleportTo(target, spawn.x, spawn.y, spawn.z, spawn.yaw, spawn.pitch);
+            return player.serverLevel().dimension().equals(target.dimension());
+        } catch (Throwable ex) {
+            LOGGER.warn("Failed to invoke Multiworld teleleport for {}", player.getGameProfile().getName(), ex);
+            return false;
         }
     }
 
     private ResourceLocation parseWorldId(String raw) {
-        ResourceLocation parsed = ResourceLocation.tryParse(raw);
+        String input = Objects.requireNonNullElse(raw, "").trim();
+        if (input.indexOf(':') < 0) {
+            return new ResourceLocation("multiworld", sanitize(input));
+        }
+        ResourceLocation parsed = ResourceLocation.tryParse(input);
         if (parsed != null) {
+            if ("minecraft".equals(parsed.getNamespace()) && !isVanillaDimensionId(parsed)) {
+                return new ResourceLocation("multiworld", sanitize(parsed.getPath()));
+            }
             return parsed;
         }
-        return new ResourceLocation("multiworld", sanitize(raw));
+        return new ResourceLocation("multiworld", sanitize(input));
     }
 
     private ResourceLocation worldIdOf(MapPreset preset) {
         return preset == null || preset.worldId == null ? null : ResourceLocation.tryParse(preset.worldId);
     }
 
+    private ResourceLocation resolveWorldBindingForRuntime(CommandSourceStack source, MinecraftServer server, MapPreset preset, String mapName) {
+        ResourceLocation worldId = worldIdOf(preset);
+        if (worldId == null) {
+            return null;
+        }
+        if (!isSupportedMapWorld(worldId)) {
+            source.sendFailure(Component.literal("Unsupported map world binding: " + worldId + "."));
+            return null;
+        }
+        ensureWorld(server, worldId);
+        if (getLevel(server, worldId) == null) {
+            LOGGER.warn("Map '{}' world '{}' could not be loaded at runtime", mapName, worldId);
+            source.sendFailure(Component.literal("World is not loaded: " + worldId));
+            return null;
+        }
+        return worldId;
+    }
+
     private String validatePresetBeforeUse(MapPreset preset) {
         ResourceLocation boundWorld = worldIdOf(preset);
         if (boundWorld == null) {
             return "invalid world binding";
+        }
+        if (!isSupportedMapWorld(boundWorld)) {
+            return "map world must be a non-vanilla custom dimension";
         }
         if (preset.redSpawn == null || preset.blueSpawn == null) {
             return "both team spawns are required";
@@ -670,6 +1297,27 @@ public final class SquadMatchService {
         return x >= minX && x <= (maxX + 1)
                 && y >= minY && y <= (maxY + 1)
                 && z >= minZ && z <= (maxZ + 1);
+    }
+
+    private void normalizeBoundsToSquare(BoundPoint p1, BoundPoint p2) {
+        int dx = p2.x - p1.x;
+        int dz = p2.z - p1.z;
+        int size = Math.max(Math.abs(dx), Math.abs(dz));
+        if (size <= 0) {
+            return;
+        }
+
+        int sx = Integer.compare(dx, 0);
+        int sz = Integer.compare(dz, 0);
+        if (sx == 0) {
+            sx = 1;
+        }
+        if (sz == 0) {
+            sz = 1;
+        }
+
+        p2.x = p1.x + sx * size;
+        p2.z = p1.z + sz * size;
     }
 
     private String normalizeMapName(String input) {
@@ -713,41 +1361,54 @@ public final class SquadMatchService {
         }
     }
 
-    private void ensurePresetBackup(MinecraftServer server, MapPreset preset) {
-        ResourceLocation worldId = worldIdOf(preset);
-        if (worldId == null) {
-            return;
-        }
-        Path worldDir = worldDirectory(server, worldId);
-        Path backupDir = backupDirectory(worldId);
-        if (Files.exists(backupDir)) {
-            return;
-        }
-        if (!Files.exists(worldDir)) {
-            LOGGER.warn("No world folder to backup for map '{}': {}", preset.mapName, worldDir);
-            return;
-        }
-        copyDirectory(worldDir, backupDir);
-    }
-
     private void ensureWorld(MinecraftServer server, ResourceLocation worldId) {
-        if (getLevel(server, worldId) != null) {
-            return;
-        }
-
-        runServerCommand(server, "mw create " + worldId.getPath() + " NORMAL");
-        if (getLevel(server, worldId) != null) {
-            return;
-        }
-
         Path dir = worldDirectory(server, worldId);
+        Path legacyDir = legacyWorldDirectory(server, worldId);
+
+        if (getLevel(server, worldId) != null) {
+            // Already loaded: just make sure at least one known folder exists.
+            if (!Files.exists(dir) && Files.exists(legacyDir)) {
+                deleteDirectory(dir);
+                copyDirectory(legacyDir, dir);
+            }
+            return;
+        }
+
         if (Files.exists(dir)) {
             multiworldLoadSavedWorld(server, dir, worldId.toString());
+            if (getLevel(server, worldId) != null) {
+                return;
+            }
+        }
+
+        if (Files.exists(legacyDir)) {
+            deleteDirectory(dir);
+            copyDirectory(legacyDir, dir);
+            multiworldLoadSavedWorld(server, dir, worldId.toString());
+            if (getLevel(server, worldId) != null) {
+                return;
+            }
+        }
+
+        runServerCommand(server, "mw create " + worldId + " NORMAL");
+        if (getLevel(server, worldId) != null) {
+            return;
+        }
+
+        if (Files.exists(dir)) {
+            multiworldLoadSavedWorld(server, dir, worldId.toString());
+            if (getLevel(server, worldId) != null) {
+                return;
+            }
+        }
+        if (Files.exists(legacyDir)) {
+            multiworldLoadSavedWorld(server, legacyDir, worldId.toString());
         }
     }
 
     private void restorePresetWorld(MinecraftServer server, String mapName, ResourceLocation worldId) {
         Path worldDir = worldDirectory(server, worldId);
+        Path legacyDir = legacyWorldDirectory(server, worldId);
         Path backupDir = backupDirectory(worldId);
         if (!Files.exists(backupDir)) {
             LOGGER.warn("No preset backup found for map '{}'. Expected: {}", mapName, backupDir);
@@ -758,8 +1419,13 @@ public final class SquadMatchService {
         unloadWorld(server, worldId);
         multiworldDeleteWorld(worldId.toString());
         deleteDirectory(worldDir);
+        deleteDirectory(legacyDir);
         copyDirectory(backupDir, worldDir);
+        copyDirectory(backupDir, legacyDir);
         multiworldLoadSavedWorld(server, worldDir, worldId.toString());
+        if (getLevel(server, worldId) == null && Files.exists(legacyDir)) {
+            multiworldLoadSavedWorld(server, legacyDir, worldId.toString());
+        }
     }
 
     private void evacuatePlayersInWorld(MinecraftServer server, ResourceLocation worldId) {
@@ -795,8 +1461,48 @@ public final class SquadMatchService {
     }
 
     private Path worldDirectory(MinecraftServer server, ResourceLocation worldId) {
-        Path root = server.getWorldPath(LevelResource.ROOT);
+        Path worldRoot = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
+        Path serverRoot = worldRoot.getParent();
+        if (serverRoot == null) {
+            serverRoot = worldRoot;
+        }
+        return serverRoot.resolve("multiworld").resolve(worldFolderName(worldId));
+    }
+
+    private Path legacyWorldDirectory(MinecraftServer server, ResourceLocation worldId) {
+        Path root = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
         return root.resolve("dimensions").resolve(worldId.getNamespace()).resolve(worldId.getPath());
+    }
+
+    private String worldFolderName(ResourceLocation worldId) {
+        if ("multiworld".equals(worldId.getNamespace())) {
+            return worldId.getPath();
+        }
+        return worldId.toString().replace('/', '_').replace(':', '_');
+    }
+
+    private boolean isSupportedMapWorld(ResourceLocation worldId) {
+        return worldId != null && !"minecraft".equals(worldId.getNamespace());
+    }
+
+    private boolean isVanillaDimensionId(ResourceLocation worldId) {
+        if (!"minecraft".equals(worldId.getNamespace())) {
+            return false;
+        }
+        String path = worldId.getPath();
+        return "overworld".equals(path) || "the_nether".equals(path) || "the_end".equals(path);
+    }
+
+    private Path existingWorldDirectory(MinecraftServer server, ResourceLocation worldId) {
+        Path preferred = worldDirectory(server, worldId);
+        if (Files.exists(preferred)) {
+            return preferred;
+        }
+        Path legacy = legacyWorldDirectory(server, worldId);
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return preferred;
     }
 
     private Path backupDirectory(ResourceLocation worldId) {
@@ -905,6 +1611,19 @@ public final class SquadMatchService {
     }
 
     private record PlayerAssignment(String mapId, String team) {}
+
+    private static final class PendingTeleport {
+        UUID playerId;
+        String mapId;
+        ResourceLocation worldId;
+        double x;
+        double y;
+        double z;
+        float yaw;
+        float pitch;
+        long nextCheckTick;
+        int attemptsRemaining;
+    }
 
     private static final class MapPreset {
         String mapName;

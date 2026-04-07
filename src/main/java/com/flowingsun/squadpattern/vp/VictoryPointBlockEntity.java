@@ -29,6 +29,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
     private float progressSigned;
     private String ownerTeam;
     private boolean contested;
+    private boolean capturing;
 
     public VictoryPointBlockEntity(BlockPos pos, BlockState state) {
         super(VictoryPointRuntime.BE_TYPE.get(), pos, state);
@@ -57,6 +58,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
         Optional<SquadMatchService.ActiveMatchView> matchOpt = SquadMatchService.INSTANCE.activeForLevel(level);
         if (matchOpt.isEmpty()) {
             contested = false;
+            capturing = false;
             mapId = null;
             return;
         }
@@ -72,7 +74,8 @@ public class VictoryPointBlockEntity extends BlockEntity {
         int maxZ = cp.getMaxBlockZ() + 1;
         AABB zone = new AABB(minX, level.getMinBuildHeight(), minZ, maxX, level.getMaxBuildHeight(), maxZ);
 
-        List<ServerPlayer> players = level.getEntitiesOfClass(ServerPlayer.class, zone, p -> !p.isSpectator() && !p.isCreative());
+        // Count all non-spectator players (including creative) so capture works during admin testing.
+        List<ServerPlayer> players = level.getEntitiesOfClass(ServerPlayer.class, zone, p -> !p.isSpectator());
         for (ServerPlayer player : players) {
             String playerTeam = SquadMatchService.INSTANCE.teamForPlayer(match.mapId(), player.getUUID());
             if (playerTeam != null) {
@@ -85,9 +88,12 @@ public class VictoryPointBlockEntity extends BlockEntity {
         int diff = a - b;
         float base = (float) (1.0D / SquadConfig.CAPTURE_SECONDS.get()) / 20.0F;
         float delta = 0F;
+        int totalPlayers = a + b;
 
         if (diff == 0) {
-            contested = (a + b) > 0;
+            contested = totalPlayers > 0;
+            // Equal presence means contested, not progressing capture ownership.
+            capturing = false;
             if (!contested && Math.abs(progressSigned) < 1F) {
                 if (progressSigned > 0) {
                     delta = -base;
@@ -97,14 +103,23 @@ public class VictoryPointBlockEntity extends BlockEntity {
             }
         } else {
             contested = false;
+            if (diff > 0) {
+                capturing = totalPlayers > 0 && progressSigned < 1F;
+            } else {
+                capturing = totalPlayers > 0 && progressSigned > -1F;
+            }
             delta = base * diff;
         }
 
         float prev = progressSigned;
         progressSigned = clamp(progressSigned + delta, -1F, 1F);
 
-        if (Math.abs(progressSigned) == 1F) {
-            ownerTeam = progressSigned > 0 ? teamA : teamB;
+        if (progressSigned >= 0.999F) {
+            progressSigned = 1F;
+            ownerTeam = teamA;
+        } else if (progressSigned <= -0.999F) {
+            progressSigned = -1F;
+            ownerTeam = teamB;
         } else if (Math.abs(progressSigned) < 0.01F) {
             ownerTeam = null;
             progressSigned = 0;
@@ -148,6 +163,10 @@ public class VictoryPointBlockEntity extends BlockEntity {
 
     public boolean isContested() {
         return contested;
+    }
+
+    public boolean isCapturing() {
+        return capturing;
     }
 
     public float getProgressForHud(String teamAName, String teamBName) {
@@ -206,6 +225,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
         tag.putInt("teamBColor", teamBColor);
         tag.putFloat("progress", progressSigned);
         tag.putBoolean("contested", contested);
+        tag.putBoolean("capturing", capturing);
         tag.putString("pointType", pointType.name());
     }
 
@@ -221,6 +241,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
         teamBColor = tag.getInt("teamBColor");
         progressSigned = tag.getFloat("progress");
         contested = tag.getBoolean("contested");
+        capturing = tag.getBoolean("capturing");
         if (tag.contains("pointType")) {
             try {
                 pointType = CapturePointType.valueOf(tag.getString("pointType"));

@@ -205,3 +205,26 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
+
+def clientModsDir = file('D:/mc/.minecraft/versions/mc war/mods')
+def serverModsDir = file('D:/mc/mcwarserver/mods')
+
+tasks.named('build').configure {
+    doLast {
+        File builtJar = tasks.named('jar', Jar).get().archiveFile.get().asFile
+        if (!builtJar.exists()) {
+            throw new GradleException("Built jar not found: ${builtJar}")
+        }
+
+        [clientModsDir, serverModsDir].each { File modsDir ->
+            if (!modsDir.exists()) {
+                modsDir.mkdirs()
+            }
+            copy {
+                from builtJar
+                into modsDir
+            }
+            println "Synced ${builtJar.name} -> ${modsDir}"
+        }
+    }
+}

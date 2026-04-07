@@ -51,8 +51,12 @@ public class SquadHudOverlay {
             }
             int x = start + i * spacing;
             int starY = (int) (centerY / scale);
-            g.drawString(font, "\u2605", x, starY, color, true);
-            if (p.ownerTeam() == null && Math.abs(p.progressSigned()) > 0.01F) {
+            String star = "\u2605";
+            int starX = x - font.width(star) / 2;
+            // Fallback glow dot so point is still visible on custom fonts / packs.
+            g.fill(x - 1, starY + 3, x + 2, starY + 6, 0xAAFFFFFF);
+            g.drawString(font, star, starX, starY, color, false);
+            if (p.capturing() || p.contested()) {
                 int cx = x + 4;
                 int cy = starY + 4;
                 drawCaptureRing(g, cx, cy, phase);

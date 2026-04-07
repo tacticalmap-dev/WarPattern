@@ -24,7 +24,7 @@ public class MatchHudSyncS2C {
     public final int oilB;
     public final List<PointView> points;
 
-    public record PointView(BlockPos pos, float progressSigned, String ownerTeam, boolean contested) {}
+    public record PointView(BlockPos pos, float progressSigned, String ownerTeam, boolean contested, boolean capturing) {}
 
     public MatchHudSyncS2C(
             String mapId,
@@ -45,7 +45,7 @@ public class MatchHudSyncS2C {
         this.oilB = oilB;
         this.points = new ArrayList<>();
         for (VictoryMatchManager.PointSnapshot s : snapshots) {
-            this.points.add(new PointView(BlockPos.of(s.pos), s.progress, s.ownerTeam, s.contested));
+            this.points.add(new PointView(BlockPos.of(s.pos), s.progress, s.ownerTeam, s.contested, s.capturing));
         }
     }
 
@@ -88,6 +88,7 @@ public class MatchHudSyncS2C {
             buf.writeFloat(p.progressSigned);
             buf.writeUtf(p.ownerTeam == null ? "" : p.ownerTeam);
             buf.writeBoolean(p.contested);
+            buf.writeBoolean(p.capturing);
         }
     }
 
@@ -110,7 +111,8 @@ public class MatchHudSyncS2C {
             float progress = buf.readFloat();
             String owner = buf.readUtf();
             boolean contested = buf.readBoolean();
-            points.add(new PointView(pos, progress, owner.isEmpty() ? null : owner, contested));
+            boolean capturing = buf.readBoolean();
+            points.add(new PointView(pos, progress, owner.isEmpty() ? null : owner, contested, capturing));
         }
         return new MatchHudSyncS2C(mapId, teamA, colorA, pointsA, ammoA, oilA, teamB, colorB, pointsB, ammoB, oilB, points, true);
     }
