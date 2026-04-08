@@ -2,6 +2,8 @@ package com.flowingsun.squadpattern.vp;
 
 import com.flowingsun.squadpattern.config.SquadConfig;
 import com.flowingsun.squadpattern.match.SquadMatchService;
+import com.mojang.logging.LogUtils;
+import net.minecraft.network.chat.Component;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -13,9 +15,13 @@ import net.minecraft.world.phys.AABB;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
 
 public class VictoryPointBlockEntity extends BlockEntity {
+    private static final Logger LOGGER = LogUtils.getLogger();
     public static final Set<VictoryPointBlockEntity> ACTIVE_POINTS = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private static final boolean DEBUG_CAPTURE_ACTIONBAR = true;
+    private static final boolean DEBUG_CAPTURE_LOG = true;
 
     private String mapId;
     private String mapName;
@@ -122,6 +128,10 @@ public class VictoryPointBlockEntity extends BlockEntity {
 
         float prev = progressSigned;
         progressSigned = clamp(progressSigned + delta, -1F, 1F);
+        // Only snap to exact neutral when nobody is contesting and the point is naturally receding.
+        if (diff == 0 && !contested && Math.abs(progressSigned) < base) {
+            progressSigned = 0F;
+        }
 
         if (progressSigned >= 0.999F) {
             progressSigned = 1F;
@@ -129,15 +139,47 @@ public class VictoryPointBlockEntity extends BlockEntity {
         } else if (progressSigned <= -0.999F) {
             progressSigned = -1F;
             ownerTeam = teamB;
-        } else if (Math.abs(progressSigned) < 0.01F) {
-            ownerTeam = null;
-            progressSigned = 0;
+        } else {
+            // If progress crosses through neutral, clear the previous owner immediately.
+            if ((Objects.equals(ownerTeam, teamA) && progressSigned <= 0F)
+                    || (Objects.equals(ownerTeam, teamB) && progressSigned >= 0F)
+                    || progressSigned == 0F) {
+                ownerTeam = null;
+            }
         }
 
         if (prev != progressSigned || delta != 0F) {
             setChanged();
             if (level.getGameTime() % 10L == 0L) {
                 level.sendBlockUpdated(getBlockPos(), getBlockState(), getBlockState(), 3);
+            }
+        }
+
+        if (DEBUG_CAPTURE_ACTIONBAR && level.getGameTime() % 20L == 0L && !players.isEmpty()) {
+            String owner = ownerTeam == null ? "neutral" : ownerTeam;
+            String dbg = "[VP-DBG] "
+                    + pointType.name().toLowerCase(Locale.ROOT)
+                    + " @" + getBlockPos().getX() + "," + getBlockPos().getY() + "," + getBlockPos().getZ()
+                    + " red=" + a
+                    + " blue=" + b
+                    + " diff=" + diff
+                    + " progress=" + String.format(Locale.ROOT, "%.3f", progressSigned)
+                    + " owner=" + owner
+                    + " contested=" + contested
+                    + " capturing=" + capturing;
+            Component line = Component.literal(dbg);
+            for (ServerPlayer p : players) {
+                p.displayClientMessage(line, true);
+            }
+            if (DEBUG_CAPTURE_LOG) {
+                StringBuilder names = new StringBuilder();
+                for (int i = 0; i < players.size(); i++) {
+                    if (i > 0) {
+                        names.append(",");
+                    }
+                    names.append(players.get(i).getGameProfile().getName());
+                }
+                LOGGER.info("{} players=[{}]", dbg, names);
             }
         }
     }
