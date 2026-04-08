@@ -1,6 +1,8 @@
 package com.flowingsun.squadpattern.match;
 
 import com.flowingsun.squadpattern.integration.FtbTeamsCompat;
+import com.flowingsun.squadpattern.net.MatchHudClearS2C;
+import com.flowingsun.squadpattern.net.SquadNetwork;
 import com.flowingsun.squadpattern.vp.VictoryMatchManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -230,6 +232,9 @@ public final class SquadMatchService {
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         MinecraftServer server = event.getServer();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            sendHudClear(player);
+        }
         for (ActiveMatch match : new ArrayList<>(activeMatches.values())) {
             restoreWorldBorderForMatch(server, match);
         }
@@ -273,6 +278,7 @@ public final class SquadMatchService {
         if (!(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
+        sendHudClear(player);
         handleReconnect(player);
     }
 
@@ -732,6 +738,7 @@ public final class SquadMatchService {
     }
 
     private void endMatchInternal(ActiveMatch match, MinecraftServer server, boolean restorePreset, String reason) {
+        sendHudClearToMatchPlayers(server, match);
         activeMatches.remove(match.mapId);
         worldToMapId.remove(match.worldId);
 
@@ -752,6 +759,25 @@ public final class SquadMatchService {
         }
 
         LOGGER.info("Match ended: mapId='{}', reason='{}'", match.mapId, reason);
+    }
+
+    private void sendHudClearToMatchPlayers(MinecraftServer server, ActiveMatch match) {
+        if (server == null || match == null) {
+            return;
+        }
+        Set<UUID> all = new HashSet<>();
+        all.addAll(match.playersA);
+        all.addAll(match.playersB);
+        for (UUID uuid : all) {
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                sendHudClear(player);
+            }
+        }
+    }
+
+    private void sendHudClear(ServerPlayer player) {
+        SquadNetwork.sendTo(player, new MatchHudClearS2C());
     }
 
     private void applyWorldBorderForMatch(ServerLevel level, ActiveMatch match) {

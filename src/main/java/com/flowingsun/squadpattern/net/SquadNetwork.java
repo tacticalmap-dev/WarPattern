@@ -31,6 +31,14 @@ public final class SquadNetwork {
                 MatchHudSyncS2C::handle,
                 Optional.of(OptionalDirection.PLAY_TO_CLIENT)
         );
+        CHANNEL.registerMessage(
+                id++,
+                MatchHudClearS2C.class,
+                MatchHudClearS2C::encode,
+                MatchHudClearS2C::decode,
+                MatchHudClearS2C::handle,
+                Optional.of(OptionalDirection.PLAY_TO_CLIENT)
+        );
     }
 
     public static void sendTo(ServerPlayer player, Object packet) {

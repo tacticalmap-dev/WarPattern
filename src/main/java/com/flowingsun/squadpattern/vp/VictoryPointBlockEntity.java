@@ -77,7 +77,16 @@ public class VictoryPointBlockEntity extends BlockEntity {
         // Count all non-spectator players (including creative) so capture works during admin testing.
         List<ServerPlayer> players = level.getEntitiesOfClass(ServerPlayer.class, zone, p -> !p.isSpectator());
         for (ServerPlayer player : players) {
-            String playerTeam = SquadMatchService.INSTANCE.teamForPlayer(match.mapId(), player.getUUID());
+            UUID pid = player.getUUID();
+            String playerTeam = null;
+            if (match.teamAPlayers().contains(pid)) {
+                playerTeam = teamA;
+            } else if (match.teamBPlayers().contains(pid)) {
+                playerTeam = teamB;
+            } else {
+                // Fallback to runtime assignment map for compatibility with older states.
+                playerTeam = SquadMatchService.INSTANCE.teamForPlayer(match.mapId(), pid);
+            }
             if (playerTeam != null) {
                 countByTeam.merge(playerTeam, 1, Integer::sum);
             }

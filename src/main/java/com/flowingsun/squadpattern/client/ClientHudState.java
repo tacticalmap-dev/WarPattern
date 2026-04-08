@@ -36,4 +36,19 @@ public final class ClientHudState {
         points.clear();
         points.addAll(pkt.points);
     }
+
+    public static void clear() {
+        mapId = null;
+        teamA = null;
+        colorA = 0;
+        pointsA = 0F;
+        ammoA = 0;
+        oilA = 0;
+        teamB = null;
+        colorB = 0;
+        pointsB = 0F;
+        ammoB = 0;
+        oilB = 0;
+        points.clear();
+    }
 }
