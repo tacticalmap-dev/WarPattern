@@ -121,17 +121,14 @@ public class VictoryPointBlockEntity extends BlockEntity {
         }
 
         float prev = progressSigned;
-        progressSigned = clamp(progressSigned + delta, -1F, 1F);
+        progressSigned = contested ? clamp(progressSigned + delta, -1F, 1F) : Math.abs(progressSigned) < Math.abs(delta) ? 0 : progressSigned + delta;
 
-        if (progressSigned >= 0.999F) {
-            progressSigned = 1F;
+        if (progressSigned == 1F) {
             ownerTeam = teamA;
-        } else if (progressSigned <= -0.999F) {
-            progressSigned = -1F;
+        } else if (progressSigned == -1F) {
             ownerTeam = teamB;
-        } else if (Math.abs(progressSigned) < 0.01F) {
+        } else if (progressSigned == 0F || progressSigned > 0 ^ prev > 0) {
             ownerTeam = null;
-            progressSigned = 0;
         }
 
         if (prev != progressSigned || delta != 0F) {
