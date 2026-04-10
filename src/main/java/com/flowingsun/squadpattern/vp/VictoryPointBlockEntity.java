@@ -17,6 +17,9 @@ import org.slf4j.Logger;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Capture point runtime logic: capture progress, ownership, and debug telemetry.
+ */
 public class VictoryPointBlockEntity extends BlockEntity {
     private static final Logger LOGGER = LogUtils.getLogger();
     public static final Set<VictoryPointBlockEntity> ACTIVE_POINTS = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -57,6 +60,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
     }
 
     private void tickServer(ServerLevel level) {
+        // Re-evaluate capture state every tick from current team presence in this chunk.
         pointType = resolveTypeFromState();
 
         Optional<SquadMatchService.ActiveMatchView> matchOpt = SquadMatchService.INSTANCE.activeForLevel(level);
@@ -170,6 +174,7 @@ public class VictoryPointBlockEntity extends BlockEntity {
     }
 
     private void bindContext(SquadMatchService.ActiveMatchView ctx) {
+        // Cached here so renderer/HUD reads do not need to resolve match context repeatedly.
         this.mapId = ctx.mapId();
         this.mapName = ctx.mapName();
         this.teamA = ctx.teamA();

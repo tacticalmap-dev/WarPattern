@@ -10,6 +10,9 @@ import net.minecraftforge.network.simple.SimpleChannel;
 
 import java.util.Optional;
 
+/**
+ * Network channel registration and small helper for per-player sends.
+ */
 public final class SquadNetwork {
 
     private static final String PROTOCOL = "1";
@@ -21,6 +24,7 @@ public final class SquadNetwork {
     );
 
     public static void init() {
+        // Keep discriminator order stable for protocol compatibility.
         int id = 0;
         CHANNEL.registerMessage(
                 id++,

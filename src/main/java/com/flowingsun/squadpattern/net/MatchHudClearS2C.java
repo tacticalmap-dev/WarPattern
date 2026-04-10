@@ -6,6 +6,9 @@ import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
 
+/**
+ * Lightweight packet used to clear client HUD state when match context is gone.
+ */
 public class MatchHudClearS2C {
     public static void encode(MatchHudClearS2C pkt, FriendlyByteBuf buf) {
         // no payload

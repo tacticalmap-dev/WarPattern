@@ -10,6 +10,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
+/**
+ * Periodic server-to-client HUD snapshot packet for active matches.
+ */
 public class MatchHudSyncS2C {
     public final String mapId;
     public final String teamA;
@@ -26,6 +29,9 @@ public class MatchHudSyncS2C {
     // -1: hidden, 0: show "return to map", >0: show countdown seconds.
     public final int returnToMapSeconds;
 
+    /**
+     * Minimal point state needed by the HUD.
+     */
     public record PointView(BlockPos pos, float progressSigned, String ownerTeam, boolean contested,
                             boolean capturing) {
     }

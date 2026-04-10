@@ -7,6 +7,9 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.common.ForgeConfigSpec;
 
+/**
+ * Minimal in-game screen for tuning HUD position/scale config values.
+ */
 public class HudConfigScreen extends Screen {
     private final Screen parent;
     private OptionsList list;
@@ -28,6 +31,7 @@ public class HudConfigScreen extends Screen {
     }
 
     private OptionInstance<Double> makeDoubleOption(String key, ForgeConfigSpec.DoubleValue value) {
+        // Bind option directly to Forge config value so edits are persisted immediately.
         return new OptionInstance<>(
                 key,
                 OptionInstance.noTooltip(),

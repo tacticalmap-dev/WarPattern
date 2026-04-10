@@ -24,6 +24,9 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
+/**
+ * Block wrapper for all capture point variants, with one-point-per-chunk guard.
+ */
 public class VictoryPointBlock extends BaseEntityBlock implements EntityBlock {
     private static final VoxelShape SHAPE = Shapes.or(
             Block.box(1, 0, 1, 15, 2, 15),
@@ -97,6 +100,7 @@ public class VictoryPointBlock extends BaseEntityBlock implements EntityBlock {
     }
 
     private static boolean hasOtherPointInChunk(LevelAccessor level, BlockPos targetPos) {
+        // Scan tracked point entities instead of chunk block scan for lower per-place overhead.
         int cx = targetPos.getX() >> 4;
         int cz = targetPos.getZ() >> 4;
         for (VictoryPointBlockEntity be : VictoryPointBlockEntity.ACTIVE_POINTS) {

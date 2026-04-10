@@ -1,5 +1,8 @@
 package com.flowingsun.squadpattern.vp;
 
+/**
+ * Capture point role metadata: HUD visibility and per-cycle resource output.
+ */
 public enum CapturePointType {
     VICTORY(true, 0, 0),
     NORMAL(false, 5, 3),

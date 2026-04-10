@@ -51,7 +51,12 @@ import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * Core match orchestration service:
+ * map presets, runtime world instances, player assignment, teleports, and lifecycle commands.
+ */
 public final class SquadMatchService {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -77,6 +82,9 @@ public final class SquadMatchService {
     ) {
     }
 
+    /**
+     * Lightweight per-player match context for HUD and gameplay queries.
+     */
     public record PlayerMatchContext(
             String mapId,
             String mapName,
@@ -92,12 +100,18 @@ public final class SquadMatchService {
     private final Path presetRoot;
 
     private final Map<String, MapPreset> mapPresets = new HashMap<>();
+    // mapId -> running match instance (each instance has its own runtime world).
     private final Map<String, ActiveMatch> activeMatches = new ConcurrentHashMap<>();
+    // player -> assigned running match/team.
     private final Map<UUID, PlayerAssignment> playerAssignments = new ConcurrentHashMap<>();
+    // runtime world dimension -> running mapId.
     private final Map<ResourceLocation, String> worldToMapId = new ConcurrentHashMap<>();
     private final Map<UUID, String> disconnectedMatchByPlayer = new ConcurrentHashMap<>();
     private final Map<UUID, PendingTeleport> pendingTeleports = new ConcurrentHashMap<>();
+    // player -> absolute server tick when out-of-bounds countdown expires.
     private final Map<UUID, Long> outOfBoundsDeadlineTickByPlayer = new ConcurrentHashMap<>();
+    // Monotonic counter for runtime world id generation.
+    private long runtimeMatchCounter;
     private long maintenanceTick;
 
     private SquadMatchService() {
@@ -240,6 +254,11 @@ public final class SquadMatchService {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             sendHudClear(player);
         }
+        for (ActiveMatch match : new ArrayList<>(activeMatches.values())) {
+            if (match.runtimeWorld) {
+                destroyRuntimeMatchWorld(server, match.worldId);
+            }
+        }
         activeMatches.clear();
         playerAssignments.clear();
         worldToMapId.clear();
@@ -348,6 +367,7 @@ public final class SquadMatchService {
             long now = server == null ? 0L : server.getTickCount();
             Long deadline = outOfBoundsDeadlineTickByPlayer.get(player.getUUID());
             if (deadline == null) {
+                // Countdown starts on server tick; HUD shows full duration before first tick writes deadline.
                 return RETURN_MAP_COUNTDOWN_SECONDS;
             }
             int seconds = (int) Math.ceil((deadline - now) / 20.0D);
@@ -640,7 +660,7 @@ public final class SquadMatchService {
             return 0;
         }
 
-        if (findActiveByMapName(mapName) != null) {
+        if (!findActivesByMapName(mapName).isEmpty()) {
             source.sendFailure(Component.literal("Map is running. End the match first: " + mapName));
             return 0;
         }
@@ -654,8 +674,10 @@ public final class SquadMatchService {
             }
         }
 
-        String mapId = mapIdOf(mapName);
-        worldToMapId.entrySet().removeIf(entry -> mapId.equals(entry.getValue()));
+        worldToMapId.entrySet().removeIf(entry -> {
+            ActiveMatch match = activeMatches.get(entry.getValue());
+            return match != null && mapName.equals(match.mapName);
+        });
         mapPresets.remove(mapName);
         saveMaps();
         if (worldId != null && worldShared) {
@@ -703,25 +725,35 @@ public final class SquadMatchService {
             return 0;
         }
 
-        ResourceLocation worldId = resolveWorldBindingForRuntime(source, source.getServer(), preset, mapName);
-        if (worldId == null) {
+        ResourceLocation templateWorldId = resolveWorldBindingForRuntime(source, source.getServer(), preset, mapName);
+        if (templateWorldId == null) {
             source.sendFailure(Component.literal("Map has invalid world binding."));
             return 0;
         }
 
         MinecraftServer server = source.getServer();
-        if (findActiveByMapName(mapName) != null) {
-            source.sendFailure(Component.literal("Map is already running: " + mapName));
-            return 0;
+        Set<UUID> allPlayers = new HashSet<>(red);
+        allPlayers.addAll(blue);
+        for (UUID uuid : allPlayers) {
+            if (playerAssignments.containsKey(uuid)) {
+                ServerPlayer conflict = server.getPlayerList().getPlayer(uuid);
+                String name = conflict == null ? uuid.toString() : conflict.getGameProfile().getName();
+                source.sendFailure(Component.literal("Player is already in an active match: " + name));
+                return 0;
+            }
         }
 
-        ensureWorld(server, worldId);
-        Path backupDir = backupDirectory(worldId);
+        Path backupDir = backupDirectory(templateWorldId);
         if (!Files.exists(backupDir)) {
             source.sendFailure(Component.literal("Map backup missing. Run /squadpattern map " + mapName + " save first."));
             return 0;
         }
-        restorePresetWorld(server, mapName, worldId);
+        // Each match runs in an isolated world cloned from the map template backup.
+        ResourceLocation worldId = createRuntimeMatchWorld(server, mapName, templateWorldId);
+        if (worldId == null) {
+            source.sendFailure(Component.literal("Failed to create runtime world for map: " + mapName));
+            return 0;
+        }
 
         ServerLevel level = getLevel(server, worldId);
         if (level == null) {
@@ -729,11 +761,13 @@ public final class SquadMatchService {
             return 0;
         }
 
-        String mapId = mapIdOf(mapName);
+        String mapId = mapIdOf(mapName, worldId);
         ActiveMatch match = new ActiveMatch();
         match.mapId = mapId;
         match.mapName = mapName;
+        match.templateWorldId = templateWorldId;
         match.worldId = worldId;
+        match.runtimeWorld = true;
         match.teamA = "red";
         match.teamB = "blue";
         match.colorA = TEAM_A_COLOR;
@@ -760,20 +794,23 @@ public final class SquadMatchService {
         VictoryMatchManager.INSTANCE.startMatch(match.view());
         FtbTeamsCompat.INSTANCE.syncMapTeams(mapId, server, "red", red, "blue", blue);
 
-        source.sendSuccess(() -> Component.literal("Match started: " + mapName), true);
+        source.sendSuccess(() -> Component.literal("Match started: " + mapName + " [" + mapId + "]"), true);
         return Command.SINGLE_SUCCESS;
     }
 
     private int endMatchByMapName(CommandSourceStack source, String rawMapName) {
         String mapName = normalizeMapName(rawMapName);
-        ActiveMatch match = findActiveByMapName(mapName);
-        if (match == null) {
+        List<ActiveMatch> matches = findActivesByMapName(mapName);
+        if (matches.isEmpty()) {
             source.sendFailure(Component.literal("No active match for map: " + mapName));
             return 0;
         }
 
-        endMatchInternal(match, source.getServer(), true, "manual");
-        source.sendSuccess(() -> Component.literal("Match ended: " + mapName), true);
+        // End all concurrent instances of the same map name in one command.
+        for (ActiveMatch match : matches) {
+            endMatchInternal(match, source.getServer(), true, "manual");
+        }
+        source.sendSuccess(() -> Component.literal("Match ended: " + mapName + " (" + matches.size() + " instance(s))"), true);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -795,7 +832,10 @@ public final class SquadMatchService {
         VictoryMatchManager.INSTANCE.resetMap(match.mapId);
         FtbTeamsCompat.INSTANCE.disbandMapTeams(match.mapId, server);
 
-        if (restorePreset) {
+        if (match.runtimeWorld) {
+            // Runtime worlds are disposable; always destroy to avoid cross-match pollution.
+            destroyRuntimeMatchWorld(server, match.worldId);
+        } else if (restorePreset) {
             restorePresetWorld(server, match.mapName, match.worldId);
         }
 
@@ -849,6 +889,7 @@ public final class SquadMatchService {
 
             MapBounds bounds = resolveBounds(match);
             if (isOutsideBounds(player.getX(), player.getZ(), bounds)) {
+                // Server-authoritative countdown; client only renders the mirrored state.
                 long deadline = outOfBoundsDeadlineTickByPlayer.computeIfAbsent(
                         playerId,
                         ignored -> now + RETURN_MAP_COUNTDOWN_SECONDS * 20L
@@ -888,17 +929,18 @@ public final class SquadMatchService {
         return nearest <= RETURN_MAP_WARNING_RANGE_BLOCKS;
     }
 
-    private ActiveMatch findActiveByMapName(String mapName) {
+    private List<ActiveMatch> findActivesByMapName(String mapName) {
+        List<ActiveMatch> result = new ArrayList<>();
         for (ActiveMatch match : activeMatches.values()) {
             if (match.mapName.equals(mapName)) {
-                return match;
+                result.add(match);
             }
         }
-        return null;
+        return result;
     }
 
-    private String mapIdOf(String mapName) {
-        return "squad:" + mapName;
+    private String mapIdOf(String mapName, ResourceLocation runtimeWorldId) {
+        return "squad:" + mapName + "@" + runtimeWorldId;
     }
 
     private boolean isWorldReferencedByOtherMap(String mapName, ResourceLocation worldId) {
@@ -950,15 +992,20 @@ public final class SquadMatchService {
                 continue;
             }
 
-            ActiveMatch running = findActiveByMapName(mapName);
-            if (running != null) {
-                teleportPlayersToDefault(server, running.playersA);
-                teleportPlayersToDefault(server, running.playersB);
-                endMatchInternal(running, server, false, "map-world-deleted");
+            List<ActiveMatch> running = findActivesByMapName(mapName);
+            for (ActiveMatch match : running) {
+                teleportPlayersToDefault(server, match.playersA);
+                teleportPlayersToDefault(server, match.playersB);
+                endMatchInternal(match, server, false, "map-world-deleted");
             }
 
-            String mapId = mapIdOf(mapName);
-            worldToMapId.entrySet().removeIf(e -> mapId.equals(e.getValue()) || worldId.equals(e.getKey()));
+            worldToMapId.entrySet().removeIf(e -> {
+                if (worldId.equals(e.getKey())) {
+                    return true;
+                }
+                ActiveMatch match = activeMatches.get(e.getValue());
+                return match != null && mapName.equals(match.mapName);
+            });
             deleteDirectory(backupDirectory(worldId));
             iterator.remove();
             removedMaps.add(mapName + " -> " + worldId);
@@ -1505,26 +1552,75 @@ public final class SquadMatchService {
         }
     }
 
-    private void restorePresetWorld(MinecraftServer server, String mapName, ResourceLocation worldId) {
-        Path worldDir = worldDirectory(server, worldId);
-        Path legacyDir = legacyWorldDirectory(server, worldId);
-        Path backupDir = backupDirectory(worldId);
-        if (!Files.exists(backupDir)) {
-            LOGGER.warn("No preset backup found for map '{}'. Expected: {}", mapName, backupDir);
+    private ResourceLocation createRuntimeMatchWorld(MinecraftServer server, String mapName, ResourceLocation templateWorldId) {
+        // Retry a few ids in case of stale folders from abnormal shutdown.
+        for (int attempts = 0; attempts < 20; attempts++) {
+            ResourceLocation runtimeWorldId = nextRuntimeWorldId(mapName, templateWorldId.getNamespace());
+            Path runtimeDir = worldDirectory(server, runtimeWorldId);
+            Path runtimeLegacyDir = legacyWorldDirectory(server, runtimeWorldId);
+            if (getLevel(server, runtimeWorldId) != null || Files.exists(runtimeDir) || Files.exists(runtimeLegacyDir)) {
+                continue;
+            }
+            if (!restoreWorldFromBackup(server, mapName, templateWorldId, runtimeWorldId)) {
+                continue;
+            }
+            if (getLevel(server, runtimeWorldId) != null) {
+                return runtimeWorldId;
+            }
+        }
+        return null;
+    }
+
+    private ResourceLocation nextRuntimeWorldId(String mapName, String namespace) {
+        runtimeMatchCounter++;
+        // Keep ids short/readable while staying collision-resistant in a single server runtime.
+        String token = Long.toString(System.currentTimeMillis(), 36)
+                + Long.toString(runtimeMatchCounter, 36)
+                + Integer.toString(ThreadLocalRandom.current().nextInt(1296), 36);
+        String path = sanitize("match_" + mapName + "_" + token);
+        return new ResourceLocation(namespace, path);
+    }
+
+    private void destroyRuntimeMatchWorld(MinecraftServer server, ResourceLocation worldId) {
+        if (server == null || worldId == null) {
             return;
         }
-
+        // Best-effort teardown for both modern multiworld folder and legacy dimension folder.
+        Path worldDir = worldDirectory(server, worldId);
+        Path legacyDir = legacyWorldDirectory(server, worldId);
         evacuatePlayersInWorld(server, worldId);
         unloadWorld(server, worldId);
         multiworldDeleteWorld(server, worldId);
         deleteDirectory(worldDir);
         deleteDirectory(legacyDir);
+    }
+
+    private boolean restoreWorldFromBackup(MinecraftServer server, String mapName, ResourceLocation backupSourceWorldId, ResourceLocation targetWorldId) {
+        Path worldDir = worldDirectory(server, targetWorldId);
+        Path legacyDir = legacyWorldDirectory(server, targetWorldId);
+        Path backupDir = backupDirectory(backupSourceWorldId);
+        if (!Files.exists(backupDir)) {
+            LOGGER.warn("No preset backup found for map '{}'. Expected: {}", mapName, backupDir);
+            return false;
+        }
+
+        evacuatePlayersInWorld(server, targetWorldId);
+        unloadWorld(server, targetWorldId);
+        multiworldDeleteWorld(server, targetWorldId);
+        deleteDirectory(worldDir);
+        deleteDirectory(legacyDir);
+        // Copy backup into both layouts so different loaders can still find the world.
         copyDirectory(backupDir, worldDir);
         copyDirectory(backupDir, legacyDir);
-        multiworldLoadSavedWorld(server, worldDir, worldId.toString());
-        if (getLevel(server, worldId) == null && Files.exists(legacyDir)) {
-            multiworldLoadSavedWorld(server, legacyDir, worldId.toString());
+        multiworldLoadSavedWorld(server, worldDir, targetWorldId.toString());
+        if (getLevel(server, targetWorldId) == null && Files.exists(legacyDir)) {
+            multiworldLoadSavedWorld(server, legacyDir, targetWorldId.toString());
         }
+        return getLevel(server, targetWorldId) != null;
+    }
+
+    private void restorePresetWorld(MinecraftServer server, String mapName, ResourceLocation worldId) {
+        restoreWorldFromBackup(server, mapName, worldId, worldId);
     }
 
     private void evacuatePlayersInWorld(MinecraftServer server, ResourceLocation worldId) {
@@ -1700,7 +1796,12 @@ public final class SquadMatchService {
     private static final class ActiveMatch {
         String mapId;
         String mapName;
+        // Original map template world that provides immutable backup source.
+        ResourceLocation templateWorldId;
+        // Actual world where this match instance runs.
         ResourceLocation worldId;
+        // true for cloned runtime world; false for legacy direct-world mode.
+        boolean runtimeWorld;
         String teamA;
         String teamB;
         int colorA;

@@ -8,6 +8,9 @@ import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.event.level.ExplosionEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
+/**
+ * Prevents capture point destruction by non-admin players and explosions.
+ */
 public class VictoryPointProtection {
     @SubscribeEvent
     public void onBreak(BlockEvent.BreakEvent event) {

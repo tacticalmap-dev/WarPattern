@@ -5,6 +5,9 @@ import com.flowingsun.squadpattern.net.MatchHudSyncS2C;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Client-only mirror of the latest HUD snapshot pushed by the server.
+ */
 public final class ClientHudState {
 
     public static String mapId;
@@ -23,6 +26,7 @@ public final class ClientHudState {
     public static final List<MatchHudSyncS2C.PointView> points = new ArrayList<>();
 
     public static void apply(MatchHudSyncS2C pkt) {
+        // Atomic-style overwrite: every HUD tick replaces the full snapshot.
         mapId = pkt.mapId;
         teamA = pkt.teamA;
         colorA = pkt.colorA;
@@ -40,6 +44,7 @@ public final class ClientHudState {
     }
 
     public static void clear() {
+        // Used when player leaves/ends match so stale values do not keep rendering.
         mapId = null;
         teamA = null;
         colorA = 0;

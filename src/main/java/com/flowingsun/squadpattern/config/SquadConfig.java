@@ -2,6 +2,9 @@ package com.flowingsun.squadpattern.config;
 
 import net.minecraftforge.common.ForgeConfigSpec;
 
+/**
+ * Central Forge config definitions for gameplay and client HUD tuning.
+ */
 public final class SquadConfig {
 
     public static final ForgeConfigSpec COMMON_SPEC;
@@ -24,6 +27,7 @@ public final class SquadConfig {
     public static final ForgeConfigSpec.DoubleValue HUD_SCALE;
 
     static {
+        // Shared server/common gameplay knobs.
         ForgeConfigSpec.Builder common = new ForgeConfigSpec.Builder();
         INITIAL_VICTORY_POINTS = common.comment("Initial victory points for each side in every match")
                 .defineInRange("initialVictoryPoints", 500, 1, 100000);
@@ -48,6 +52,7 @@ public final class SquadConfig {
         common.pop();
         COMMON_SPEC = common.build();
 
+        // Client-only HUD layout knobs.
         ForgeConfigSpec.Builder client = new ForgeConfigSpec.Builder();
         HUD_LEFT_X = client.comment("Left team ticket text X (0-1 of screen width)")
                 .defineInRange("hudLeftX", 0.2D, 0.0D, 1.0D);

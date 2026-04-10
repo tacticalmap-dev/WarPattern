@@ -13,19 +13,26 @@ import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
+/**
+ * Main Forge mod entry point.
+ * Wires registries, config specs, network channel, and runtime services.
+ */
 @Mod(SquadPatternMod.MOD_ID)
 public class SquadPatternMod {
     public static final String MOD_ID = "squadpattern";
 
     public SquadPatternMod() {
+        // Register game content first so objects are available before gameplay systems boot.
         VictoryPointRuntime.register(FMLJavaModLoadingContext.get().getModEventBus());
         FMLJavaModLoadingContext.get().getModEventBus().addListener(this::onCreativeTab);
 
+        // Expose both server/common and client-side config trees.
         ModLoadingContext.get().registerConfig(net.minecraftforge.fml.config.ModConfig.Type.COMMON, SquadConfig.COMMON_SPEC);
         ModLoadingContext.get().registerConfig(net.minecraftforge.fml.config.ModConfig.Type.CLIENT, SquadConfig.CLIENT_SPEC);
 
         SquadNetwork.init();
 
+        // Runtime services are Forge-event driven.
         MinecraftForge.EVENT_BUS.register(SquadMatchService.INSTANCE);
         MinecraftForge.EVENT_BUS.register(VictoryMatchManager.INSTANCE);
         MinecraftForge.EVENT_BUS.register(new VictoryPointProtection());

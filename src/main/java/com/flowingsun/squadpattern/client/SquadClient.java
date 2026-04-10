@@ -10,6 +10,9 @@ import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+/**
+ * Client bootstrap hooks: renderer registration, keybinds, and HUD event routing.
+ */
 @Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.MOD)
 public class SquadClient {
     public static final KeyMapping OPEN_HUD_CONFIG = new KeyMapping("key.squadpattern.hud_config", InputConstants.KEY_O, "key.categories.squadpattern");
@@ -37,6 +40,7 @@ public class SquadClient {
 
         @SubscribeEvent
         public static void onHud(net.minecraftforge.client.event.RenderGuiOverlayEvent.Post event) {
+            // Keep HUD render path centralized in one overlay implementation.
             HUD.onHud(event);
         }
     }

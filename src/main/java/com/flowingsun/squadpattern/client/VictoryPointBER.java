@@ -14,11 +14,15 @@ import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 
+/**
+ * World-space label renderer for capture points.
+ */
 public class VictoryPointBER implements BlockEntityRenderer<VictoryPointBlockEntity> {
     public VictoryPointBER(BlockEntityRendererProvider.Context ignored) {}
 
     @Override
     public void render(VictoryPointBlockEntity be, float partialTick, PoseStack poseStack, MultiBufferSource buffer, int packedLight, int packedOverlay) {
+        // Skip when no local player context or point is too far for readable labels.
         if (Minecraft.getInstance().player == null || be.getLevel() == null) {
             return;
         }

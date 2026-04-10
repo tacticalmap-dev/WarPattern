@@ -8,9 +8,13 @@ import net.minecraft.client.resources.language.I18n;
 import net.minecraftforge.client.event.RenderGuiOverlayEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
+/**
+ * Draws top HUD (tickets/resources/point stars) and return-to-map warning text.
+ */
 public class SquadHudOverlay {
     @SubscribeEvent
     public void onHud(RenderGuiOverlayEvent.Post event) {
+        // No active match snapshot on client.
         if (ClientHudState.teamA == null || ClientHudState.teamB == null) {
             return;
         }
@@ -72,6 +76,7 @@ public class SquadHudOverlay {
         g.pose().popPose();
 
         if (ClientHudState.returnToMapSeconds >= 0) {
+            // Countdown comes from server-authoritative boundary checks.
             String text = ClientHudState.returnToMapSeconds > 0
                     ? I18n.get("hud.squadpattern.return_to_map_countdown", ClientHudState.returnToMapSeconds)
                     : I18n.get("hud.squadpattern.return_to_map");

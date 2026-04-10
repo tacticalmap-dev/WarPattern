@@ -8,6 +8,9 @@ import org.slf4j.Logger;
 import java.lang.reflect.Method;
 import java.util.*;
 
+/**
+ * Optional FTB Teams integration implemented via reflection to keep hard dependency optional.
+ */
 public final class FtbTeamsCompat {
     public static final FtbTeamsCompat INSTANCE = new FtbTeamsCompat();
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -93,6 +96,7 @@ public final class FtbTeamsCompat {
 
     private boolean isAvailableAndLoaded() {
         try {
+            // Reflection avoids classloading failures when FTB Teams is not installed.
             Class<?> apiClass = Class.forName("dev.ftb.mods.ftbteams.api.FTBTeamsAPI");
             Object api = apiClass.getMethod("api").invoke(null);
             if (api == null) return false;

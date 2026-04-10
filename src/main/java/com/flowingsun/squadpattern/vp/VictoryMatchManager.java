@@ -13,6 +13,9 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Runtime scoreboard/resource manager and HUD sync producer for active matches.
+ */
 public final class VictoryMatchManager {
     public static final VictoryMatchManager INSTANCE = new VictoryMatchManager();
 
@@ -27,6 +30,9 @@ public final class VictoryMatchManager {
         public boolean capturing;
     }
 
+    /**
+     * Server-side mutable state for one running match instance.
+     */
     public static final class MatchState {
         public String mapId;
         public String mapName;
@@ -148,6 +154,7 @@ public final class VictoryMatchManager {
     }
 
     private void syncHud(MinecraftServer server) {
+        // Build lightweight indexes once per tick to avoid repeated full scans per player.
         Map<String, List<VictoryPointBlockEntity>> pointsByMap = new HashMap<>();
         Map<ResourceLocation, List<VictoryPointBlockEntity>> pointsByWorld = new HashMap<>();
         for (VictoryPointBlockEntity point : VictoryPointBlockEntity.ACTIVE_POINTS) {
