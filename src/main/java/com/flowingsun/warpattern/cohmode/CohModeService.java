@@ -56,6 +56,7 @@ public final class CohModeService {
 
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
+        // Cohmode command is mounted under the unified /warpattern namespace.
         LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("warpattern")
                 .then(Commands.literal("cohmode")
                         .then(Commands.literal("open")
@@ -72,6 +73,7 @@ public final class CohModeService {
             return;
         }
         ticks++;
+        // Run lightweight maintenance once per second instead of every tick.
         if (ticks % 20L != 0L) {
             return;
         }
@@ -145,6 +147,7 @@ public final class CohModeService {
     }
 
     private void push(ServerPlayer player, boolean openScreen) {
+        // openScreen=true asks the client to display CohModeScreen immediately.
         String json = GSON.toJson(buildState(player));
         CohModeNetwork.sendTo(player, new CohModeStateS2C(json, openScreen));
     }

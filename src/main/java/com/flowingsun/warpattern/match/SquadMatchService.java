@@ -95,7 +95,9 @@ public final class SquadMatchService {
 
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
+        // Keep root command discoverable; admin checks are enforced per management branch.
         LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("warpattern")
+                // Map setup/editing is host-admin only.
                 .then(Commands.literal("map")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("delete")
@@ -178,11 +180,13 @@ public final class SquadMatchService {
                                 .then(Commands.literal("preset")
                                         .then(Commands.literal("remake")
                                                 .executes(ctx -> remakePreset(ctx.getSource(), StringArgumentType.getString(ctx, "mapName")))))))
+                // Explicit preset branch kept for direct access without going through /map.
                 .then(Commands.literal("preset")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("remake")
                                 .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
                                         .executes(ctx -> remakePreset(ctx.getSource(), StringArgumentType.getString(ctx, "mapName"))))))
+                // Manual match control path for operators.
                 .then(Commands.literal("match")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("start")
@@ -199,6 +203,7 @@ public final class SquadMatchService {
                                 .then(Commands.argument("mapName", StringArgumentType.word()).suggests(this::suggestMapNames)
                                         .executes(ctx -> endMatchByMapName(ctx.getSource(), StringArgumentType.getString(ctx, "mapName"))))));
 
+        // Backward-compatible admin command tree used by existing server scripts.
         LiteralArgumentBuilder<CommandSourceStack> game = Commands.literal("game")
                 .requires(source -> source.hasPermission(2))
                 .then(Commands.literal("start")
