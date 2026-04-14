@@ -42,6 +42,7 @@ public class CohModeScreen extends Screen {
     private EditBox kickNameBox;
     private UiMode selectedMode;
     private UiStep renderedStep;
+    private boolean forceCampStep;
 
     public CohModeScreen() {
         super(Component.literal("Cohmode Flow UI"));
@@ -80,10 +81,12 @@ public class CohModeScreen extends Screen {
         CohModeModels.LobbyStateView s = CohModeClientState.state();
         if (s.currentRoom != null) {
             selectedMode = UiMode.ROOM;
+            forceCampStep = false;
             return;
         }
         if (s.selectedCamp == null) {
             selectedMode = null;
+            forceCampStep = false;
         }
     }
 
@@ -92,7 +95,7 @@ public class CohModeScreen extends Screen {
         if (s.currentRoom != null) {
             return UiStep.ROOM_PREP;
         }
-        if (s.selectedCamp == null) {
+        if (s.selectedCamp == null || forceCampStep) {
             return UiStep.CAMP;
         }
         if (selectedMode == null) {
@@ -115,6 +118,10 @@ public class CohModeScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Refresh"), b ->
                 CohModeClientState.sendAction("refresh", CohModeClientState.json()))
                 .bounds(left, top, 80, 20).build());
+        if (renderedStep != UiStep.CAMP) {
+            addRenderableWidget(Button.builder(Component.literal("Back"), b -> onBack())
+                    .bounds(left + 86, top, 80, 20).build());
+        }
         addRenderableWidget(Button.builder(Component.literal("Close"), b -> onClose())
                 .bounds(width - 92, top, 80, 20).build());
 
@@ -132,26 +139,20 @@ public class CohModeScreen extends Screen {
     }
 
     private void buildModeStep(int left, int top) {
+        int modeY = top;
         addRenderableWidget(Button.builder(Component.literal("Matchmaking"), b -> {
             selectedMode = UiMode.MATCHMAKING;
             rebuildUi();
-        }).bounds(left, top, 150, 20).build());
+        }).bounds(left, modeY, 150, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Room Mode"), b -> {
             selectedMode = UiMode.ROOM;
             rebuildUi();
-        }).bounds(left + 156, top, 150, 20).build());
-
-        addCampButtons(left, top + 28);
+        }).bounds(left + 156, modeY, 150, 20).build());
     }
 
     private void buildMatchStep(int left, int top) {
-        addRenderableWidget(Button.builder(Component.literal("Back To Mode"), b -> {
-            selectedMode = null;
-            rebuildUi();
-        }).bounds(left, top, 120, 20).build());
-
-        int roleY = top + 28;
+        int roleY = top;
         addRenderableWidget(Button.builder(Component.literal("Rifleman"), b -> selectRole(CohModeModels.Role.RIFLEMAN))
                 .bounds(left, roleY, 95, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Assault"), b -> selectRole(CohModeModels.Role.ASSAULT))
@@ -186,14 +187,9 @@ public class CohModeScreen extends Screen {
     }
 
     private void buildRoomEntryStep(int left, int top) {
-        addRenderableWidget(Button.builder(Component.literal("Back To Mode"), b -> {
-            selectedMode = null;
-            rebuildUi();
-        }).bounds(left, top, 120, 20).build());
-
         addRenderableWidget(Button.builder(Component.literal("Create Room"), b ->
                 CohModeClientState.sendAction("create_room", CohModeClientState.json()))
-                .bounds(left + 126, top, 120, 20).build());
+                .bounds(left, top, 120, 20).build());
 
         roomIdBox = new EditBox(font, left, top + 28, 120, 20, Component.literal("Room ID"));
         roomIdBox.setHint(Component.literal("Room ID"));
@@ -305,15 +301,44 @@ public class CohModeScreen extends Screen {
     }
 
     private void selectCamp(CohModeModels.Camp camp) {
+        CohModeClientState.state().selectedCamp = camp;
+        forceCampStep = false;
         JsonObject payload = CohModeClientState.json();
         payload.addProperty("camp", camp.name());
         CohModeClientState.sendAction("select_camp", payload);
+        if (renderedStep == UiStep.CAMP || renderedStep == UiStep.MODE) {
+            rebuildUi();
+        }
     }
 
     private void selectRole(CohModeModels.Role role) {
         JsonObject payload = CohModeClientState.json();
         payload.addProperty("role", role.name());
         CohModeClientState.sendAction("select_role", payload);
+    }
+
+    private void onBack() {
+        UiStep step = renderedStep == null ? resolveStep() : renderedStep;
+        switch (step) {
+            case MODE -> {
+                forceCampStep = true;
+                selectedMode = null;
+                rebuildUi();
+            }
+            case MATCHMAKING, ROOM_ENTRY -> {
+                selectedMode = null;
+                forceCampStep = false;
+                rebuildUi();
+            }
+            case ROOM_PREP -> {
+                // Step 4 -> Step 3(Room Entry): leave current room then show room entry flow.
+                selectedMode = UiMode.ROOM;
+                forceCampStep = false;
+                CohModeClientState.sendAction("leave_room", CohModeClientState.json());
+            }
+            default -> {
+            }
+        }
     }
 
     @Override
@@ -350,6 +375,7 @@ public class CohModeScreen extends Screen {
             graphics.drawString(font, "Step 1: choose your camp to continue.", 12, 64, 0xFFFFFF, false);
         } else if (step == UiStep.MODE) {
             graphics.drawString(font, "Step 2: choose matchmaking or room mode.", 12, 64, 0xFFFFFF, false);
+            graphics.drawString(font, "Camp can only be changed in Step 1.", 12, 76, 0xC8C8C8, false);
         } else if (step == UiStep.MATCHMAKING) {
             graphics.drawString(font, "Step 3: pick role then ready up (join queue).", 12, 64, 0xFFFFFF, false);
             drawMapList(graphics, width / 2 + 20, 64, s.maps, height - 44);
