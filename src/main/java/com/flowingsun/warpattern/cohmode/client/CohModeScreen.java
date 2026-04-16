@@ -153,25 +153,14 @@ public class CohModeScreen extends Screen {
 
     private void buildMatchStep(int left, int top) {
         int roleY = top;
-        addRenderableWidget(Button.builder(Component.literal("Rifleman"), b -> selectRole(CohModeModels.Role.RIFLEMAN))
-                .bounds(left, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Assault"), b -> selectRole(CohModeModels.Role.ASSAULT))
-                .bounds(left + 101, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Support"), b -> selectRole(CohModeModels.Role.SUPPORT))
-                .bounds(left + 202, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Sniper"), b -> selectRole(CohModeModels.Role.SNIPER))
-                .bounds(left, roleY + 24, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Commander"), b -> selectRole(CohModeModels.Role.COMMANDER))
-                .bounds(left + 101, roleY + 24, 95, 20).build());
-
         addRenderableWidget(Button.builder(Component.literal("Ready / Join Queue"), b ->
                 CohModeClientState.sendAction("join_random", CohModeClientState.json()))
-                .bounds(left, roleY + 56, 140, 20).build());
+                .bounds(left, roleY, 140, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Leave Queue"), b ->
                 CohModeClientState.sendAction("leave_random", CohModeClientState.json()))
-                .bounds(left + 146, roleY + 56, 110, 20).build());
+                .bounds(left + 146, roleY, 110, 20).build());
 
-        inviteNameBox = new EditBox(font, left, roleY + 84, 150, 20, Component.literal("Invite player"));
+        inviteNameBox = new EditBox(font, left, roleY + 28, 150, 20, Component.literal("Invite player"));
         inviteNameBox.setHint(Component.literal("Player name"));
         addRenderableWidget(inviteNameBox);
 
@@ -183,7 +172,7 @@ public class CohModeScreen extends Screen {
             JsonObject payload = CohModeClientState.json();
             payload.addProperty("targetName", name);
             CohModeClientState.sendAction("invite_party", payload);
-        }).bounds(left + 156, roleY + 84, 110, 20).build());
+        }).bounds(left + 156, roleY + 28, 110, 20).build());
     }
 
     private void buildRoomEntryStep(int left, int top) {
@@ -228,29 +217,20 @@ public class CohModeScreen extends Screen {
         addCampButtons(left + 116, top);
 
         int roleY = top + 28;
-        addRenderableWidget(Button.builder(Component.literal("Rifleman"), b -> selectRole(CohModeModels.Role.RIFLEMAN))
-                .bounds(left, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Assault"), b -> selectRole(CohModeModels.Role.ASSAULT))
-                .bounds(left + 101, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Support"), b -> selectRole(CohModeModels.Role.SUPPORT))
-                .bounds(left + 202, roleY, 95, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Sniper"), b -> selectRole(CohModeModels.Role.SNIPER))
-                .bounds(left + 303, roleY, 95, 20).build());
-
         addRenderableWidget(Button.builder(Component.literal("Claim Cmdr"), b ->
                 CohModeClientState.sendAction("claim_commander", CohModeClientState.json()))
-                .bounds(left, roleY + 24, 110, 20).build());
+                .bounds(left, roleY, 110, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Release Cmdr"), b ->
                 CohModeClientState.sendAction("release_commander", CohModeClientState.json()))
-                .bounds(left + 116, roleY + 24, 110, 20).build());
+                .bounds(left + 116, roleY, 110, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Toggle Ready"), b ->
                 CohModeClientState.sendAction("toggle_ready", CohModeClientState.json()))
-                .bounds(left + 232, roleY + 24, 110, 20).build());
+                .bounds(left + 232, roleY, 110, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Start Room"), b ->
                 CohModeClientState.sendAction("start_room", CohModeClientState.json()))
-                .bounds(left + 348, roleY + 24, 110, 20).build());
+                .bounds(left + 348, roleY, 110, 20).build());
 
-        mapNameBox = new EditBox(font, left, roleY + 52, 150, 20, Component.literal("Map name"));
+        mapNameBox = new EditBox(font, left, roleY + 28, 150, 20, Component.literal("Map name"));
         mapNameBox.setHint(Component.literal("Map name"));
         addRenderableWidget(mapNameBox);
 
@@ -262,9 +242,9 @@ public class CohModeScreen extends Screen {
             JsonObject payload = CohModeClientState.json();
             payload.addProperty("mapName", map);
             CohModeClientState.sendAction("set_room_map", payload);
-        }).bounds(left + 156, roleY + 52, 120, 20).build());
+        }).bounds(left + 156, roleY + 28, 120, 20).build());
 
-        inviteNameBox = new EditBox(font, left, roleY + 80, 150, 20, Component.literal("Invite player"));
+        inviteNameBox = new EditBox(font, left, roleY + 56, 150, 20, Component.literal("Invite player"));
         inviteNameBox.setHint(Component.literal("Player name"));
         addRenderableWidget(inviteNameBox);
 
@@ -276,9 +256,9 @@ public class CohModeScreen extends Screen {
             JsonObject payload = CohModeClientState.json();
             payload.addProperty("targetName", name);
             CohModeClientState.sendAction("invite_room", payload);
-        }).bounds(left + 156, roleY + 80, 120, 20).build());
+        }).bounds(left + 156, roleY + 56, 120, 20).build());
 
-        kickNameBox = new EditBox(font, left + 282, roleY + 80, 140, 20, Component.literal("Kick player"));
+        kickNameBox = new EditBox(font, left + 282, roleY + 56, 140, 20, Component.literal("Kick player"));
         kickNameBox.setHint(Component.literal("Kick name"));
         addRenderableWidget(kickNameBox);
 
@@ -290,7 +270,7 @@ public class CohModeScreen extends Screen {
             JsonObject payload = CohModeClientState.json();
             payload.addProperty("targetName", name);
             CohModeClientState.sendAction("kick_room_member", payload);
-        }).bounds(left + 428, roleY + 80, 70, 20).build());
+        }).bounds(left + 428, roleY + 56, 70, 20).build());
     }
 
     private void addCampButtons(int left, int top) {
@@ -309,12 +289,6 @@ public class CohModeScreen extends Screen {
         if (renderedStep == UiStep.CAMP || renderedStep == UiStep.MODE) {
             rebuildUi();
         }
-    }
-
-    private void selectRole(CohModeModels.Role role) {
-        JsonObject payload = CohModeClientState.json();
-        payload.addProperty("role", role.name());
-        CohModeClientState.sendAction("select_role", payload);
     }
 
     private void onBack() {
@@ -377,13 +351,13 @@ public class CohModeScreen extends Screen {
             graphics.drawString(font, "Step 2: choose matchmaking or room mode.", 12, 64, 0xFFFFFF, false);
             graphics.drawString(font, "Camp can only be changed in Step 1.", 12, 76, 0xC8C8C8, false);
         } else if (step == UiStep.MATCHMAKING) {
-            graphics.drawString(font, "Step 3: pick role then ready up (join queue).", 12, 64, 0xFFFFFF, false);
+            graphics.drawString(font, "Step 3: ready up for queue (role selection moved to /warpattern cohmode role).", 12, 64, 0xFFFFFF, false);
             drawMapList(graphics, width / 2 + 20, 64, s.maps, height - 44);
         } else if (step == UiStep.ROOM_ENTRY) {
             graphics.drawString(font, "Step 3: create room or join existing room.", 12, 64, 0xFFFFFF, false);
             drawOpenRooms(graphics, width / 2 + 20, 64, s.rooms, height - 44);
         } else if (step == UiStep.ROOM_PREP) {
-            graphics.drawString(font, "Step 4: room prep (camp/role/ready/map/start).", 12, 64, 0xFFFFFF, false);
+            graphics.drawString(font, "Step 4: room prep (camp/commander/ready/map/start).", 12, 64, 0xFFFFFF, false);
             drawRoomState(graphics, 12, 78, s);
             drawMapList(graphics, width / 2 + 20, 64, s.maps, height - 44);
         }

@@ -63,7 +63,12 @@ public final class CohModeService {
                                 .executes(ctx -> openSelf(ctx.getSource()))
                                 .then(Commands.argument("player", EntityArgument.player())
                                         .requires(source -> source.hasPermission(2))
-                                        .executes(ctx -> openTarget(ctx.getSource(), EntityArgument.getPlayer(ctx, "player"))))));
+                                        .executes(ctx -> openTarget(ctx.getSource(), EntityArgument.getPlayer(ctx, "player")))))
+                        .then(Commands.literal("role")
+                                .executes(ctx -> openRoleSelf(ctx.getSource()))
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .requires(source -> source.hasPermission(2))
+                                        .executes(ctx -> openRoleTarget(ctx.getSource(), EntityArgument.getPlayer(ctx, "player"))))));
         event.getDispatcher().register(root);
     }
 
@@ -133,7 +138,7 @@ public final class CohModeService {
             source.sendFailure(Component.literal("Player-only command."));
             return 0;
         }
-        push(player, true);
+        push(player, CohModeStateS2C.OPEN_MAIN);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -141,15 +146,37 @@ public final class CohModeService {
         if (target == null) {
             return 0;
         }
-        push(target, true);
+        push(target, CohModeStateS2C.OPEN_MAIN);
         source.sendSuccess(() -> Component.literal("Opened cohmode UI for " + target.getGameProfile().getName()), true);
         return Command.SINGLE_SUCCESS;
     }
 
+    private int openRoleSelf(CommandSourceStack source) {
+        if (!(source.getEntity() instanceof ServerPlayer player)) {
+            source.sendFailure(Component.literal("Player-only command."));
+            return 0;
+        }
+        push(player, CohModeStateS2C.OPEN_ROLE);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private int openRoleTarget(CommandSourceStack source, ServerPlayer target) {
+        if (target == null) {
+            return 0;
+        }
+        push(target, CohModeStateS2C.OPEN_ROLE);
+        source.sendSuccess(() -> Component.literal("Opened cohmode role UI for " + target.getGameProfile().getName()), true);
+        return Command.SINGLE_SUCCESS;
+    }
+
     private void push(ServerPlayer player, boolean openScreen) {
-        // openScreen=true asks the client to display CohModeScreen immediately.
+        // Backward-compatible helper for existing call sites.
+        push(player, openScreen ? CohModeStateS2C.OPEN_MAIN : CohModeStateS2C.OPEN_NONE);
+    }
+
+    private void push(ServerPlayer player, int openUi) {
         String json = GSON.toJson(buildState(player));
-        CohModeNetwork.sendTo(player, new CohModeStateS2C(json, openScreen));
+        CohModeNetwork.sendTo(player, new CohModeStateS2C(json, openUi));
     }
 
     private JsonObject parsePayload(String payloadJson) {
