@@ -425,13 +425,15 @@ public class CohModeScreen extends Screen {
         graphics.drawCenteredString(font, "战术大厅终端", width / 2, 8, CohUiTheme.TEXT_PRIMARY);
         
         String stepText = "作战阶段 " + step.level + "/4 - " + step.title;
-        int stepWidth = font.width(stepText);
-        graphics.drawString(font, stepText, width - 20 - stepWidth, 8, CohUiTheme.TEXT_HIGHLIGHT, false);
+        graphics.drawString(font, stepText, 20, 8, CohUiTheme.TEXT_HIGHLIGHT, false);
+
+        String queueStr = "队列状态（华约/北约）：" + s.queue.redQueued + "/" + s.queue.blueQueued + (s.queue.queued ? "（已在队列中）" : "");
+        int queueWidth = font.width(queueStr);
+        graphics.drawString(font, queueStr, width - 20 - queueWidth, 8, CohUiTheme.TEXT_SECONDARY, false);
 
         String campStr = s.selectedCamp == null ? "未选择" : s.selectedCamp.label;
         String roleStr = s.selectedRole == null ? "未选择" : s.selectedRole.label;
-        String queueStr = s.queue.redQueued + "/" + s.queue.blueQueued + (s.queue.queued ? "（已在队列中）" : "");
-        String infoText = "当前阵营：" + campStr + "    当前兵种：" + roleStr + "    队列状态（华约/北约）：" + queueStr;
+        String infoText = "当前阵营：" + campStr + "    当前兵种：" + roleStr;
         graphics.drawCenteredString(font, infoText, width / 2, 28, CohUiTheme.TEXT_SECONDARY);
 
         if (s.party != null) {
