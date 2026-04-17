@@ -423,20 +423,20 @@ public class CohModeScreen extends Screen {
         super.render(graphics, mouseX, mouseY, partialTick);
 
         graphics.drawCenteredString(font, "战术大厅终端", width / 2, 8, CohUiTheme.TEXT_PRIMARY);
-        graphics.drawString(font, "作战阶段 " + step.level + "/4 - " + step.title, 20, 8, CohUiTheme.TEXT_HIGHLIGHT, false);
+        
+        String stepText = "作战阶段 " + step.level + "/4 - " + step.title;
+        int stepWidth = font.width(stepText);
+        graphics.drawString(font, stepText, width - 20 - stepWidth, 8, CohUiTheme.TEXT_HIGHLIGHT, false);
 
-        int x = 20;
-        int y = Math.max(170, height - 86);
-        graphics.drawString(font, "当前阵营：" + (s.selectedCamp == null ? "未选择" : s.selectedCamp.label), x, y, CohUiTheme.TEXT_PRIMARY, false);
-        y += 11;
-        graphics.drawString(font, "当前兵种：" + (s.selectedRole == null ? "未选择" : s.selectedRole.label), x, y, CohUiTheme.TEXT_PRIMARY, false);
-        y += 11;
-        graphics.drawString(font, "队列状态（华约/北约）：" + s.queue.redQueued + "/" + s.queue.blueQueued + (s.queue.queued ? "（已在队列中）" : ""), x, y, CohUiTheme.TEXT_SECONDARY, false);
-        y += 11;
+        String campStr = s.selectedCamp == null ? "未选择" : s.selectedCamp.label;
+        String roleStr = s.selectedRole == null ? "未选择" : s.selectedRole.label;
+        String queueStr = s.queue.redQueued + "/" + s.queue.blueQueued + (s.queue.queued ? "（已在队列中）" : "");
+        String infoText = "当前阵营：" + campStr + "    当前兵种：" + roleStr + "    队列状态（华约/北约）：" + queueStr;
+        graphics.drawCenteredString(font, infoText, width / 2, 28, CohUiTheme.TEXT_SECONDARY);
 
         if (s.party != null) {
-            graphics.drawString(font, "队长：" + s.party.leaderName + "  成员：" + String.join(", ", s.party.members), x, y, CohUiTheme.NATO_BLUE, false);
-            y += 11;
+            int partyY = Math.max(170, height - 86);
+            graphics.drawString(font, "队长：" + s.party.leaderName + "  成员：" + String.join(", ", s.party.members), 20, partyY, CohUiTheme.NATO_BLUE, false);
         }
 
         int textY = contentBottomY + 16;
@@ -549,6 +549,7 @@ public class CohModeScreen extends Screen {
         int headerY = 8;
         int headerBottom = 18;
         graphics.fill(headerAccentX, headerY - 1, headerAccentX + 3, headerBottom + 1, CohUiTheme.HOVER_BORDER);
+        graphics.fill(width - 13, headerY - 1, width - 10, headerBottom + 1, CohUiTheme.HOVER_BORDER);
         graphics.fill(20, 24, width - 20, 25, CohUiTheme.DIVIDER);
 
         int panelTop = 40;
