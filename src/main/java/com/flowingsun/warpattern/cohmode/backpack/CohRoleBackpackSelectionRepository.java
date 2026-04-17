@@ -5,6 +5,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.io.Reader;
 import java.io.Writer;
@@ -19,6 +20,7 @@ import java.util.UUID;
  */
 public final class CohRoleBackpackSelectionRepository {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final String FILE_NAME = "role_backpack_selections.json";
 
     private static Path loadedPath;
     private static SelectionStore loadedStore;
@@ -27,11 +29,33 @@ public final class CohRoleBackpackSelectionRepository {
     }
 
     public static synchronized Path resolvePath(MinecraftServer server) {
+        return FMLPaths.CONFIGDIR.get()
+                .resolve("warpattern")
+                .resolve("cohmode")
+                .resolve(FILE_NAME);
+    }
+
+    private static Path resolveLegacyWorldPath(MinecraftServer server) {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("serverconfig")
                 .resolve("warpattern")
                 .resolve("cohmode")
-                .resolve("role_backpack_selections.json");
+                .resolve(FILE_NAME);
+    }
+
+    private static void migrateLegacyIfNeeded(MinecraftServer server, Path targetPath) {
+        if (server == null || targetPath == null || Files.exists(targetPath)) {
+            return;
+        }
+        Path legacyPath = resolveLegacyWorldPath(server);
+        if (!Files.exists(legacyPath)) {
+            return;
+        }
+        try {
+            Files.createDirectories(targetPath.getParent());
+            Files.copy(legacyPath, targetPath);
+        } catch (Exception ignored) {
+        }
     }
 
     public static synchronized Map<Integer, String> getRoleSelections(MinecraftServer server, UUID playerId, CohModeModels.Role role) {
@@ -92,6 +116,7 @@ public final class CohRoleBackpackSelectionRepository {
         if (loadedStore != null && path.equals(loadedPath)) {
             return loadedStore;
         }
+        migrateLegacyIfNeeded(server, path);
         loadedPath = path;
         try {
             if (Files.exists(path)) {

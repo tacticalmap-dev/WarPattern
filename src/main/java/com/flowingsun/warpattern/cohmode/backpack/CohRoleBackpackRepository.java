@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.io.Reader;
 import java.io.Writer;
@@ -11,10 +12,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Repository for role backpack config persisted per server world.
+ * Repository for role backpack config persisted in global config directory.
  */
 public final class CohRoleBackpackRepository {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final String FILE_NAME = "role_backpacks.json";
 
     private static Path loadedPath;
     private static CohRoleBackpackConfig loadedConfig;
@@ -23,11 +25,33 @@ public final class CohRoleBackpackRepository {
     }
 
     public static synchronized Path resolvePath(MinecraftServer server) {
+        return FMLPaths.CONFIGDIR.get()
+                .resolve("warpattern")
+                .resolve("cohmode")
+                .resolve(FILE_NAME);
+    }
+
+    private static Path resolveLegacyWorldPath(MinecraftServer server) {
         return server.getWorldPath(LevelResource.ROOT)
                 .resolve("serverconfig")
                 .resolve("warpattern")
                 .resolve("cohmode")
-                .resolve("role_backpacks.json");
+                .resolve(FILE_NAME);
+    }
+
+    private static void migrateLegacyIfNeeded(MinecraftServer server, Path targetPath) {
+        if (server == null || targetPath == null || Files.exists(targetPath)) {
+            return;
+        }
+        Path legacyPath = resolveLegacyWorldPath(server);
+        if (!Files.exists(legacyPath)) {
+            return;
+        }
+        try {
+            Files.createDirectories(targetPath.getParent());
+            Files.copy(legacyPath, targetPath);
+        } catch (Exception ignored) {
+        }
     }
 
     public static synchronized CohRoleBackpackConfig loadOrCreate(MinecraftServer server) {
@@ -35,6 +59,7 @@ public final class CohRoleBackpackRepository {
         if (loadedConfig != null && path.equals(loadedPath)) {
             return loadedConfig;
         }
+        migrateLegacyIfNeeded(server, path);
         loadedPath = path;
 
         try {
